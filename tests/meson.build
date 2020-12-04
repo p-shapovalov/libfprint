@@ -24,6 +24,7 @@ drivers_tests = [
     'vfs301',
     'vfs5011',
     'goodixmoc',
+    'uru4000-msv2',
 ]
 
 if get_option('introspection')
