@@ -55,14 +55,26 @@ def cmp_pngs(png_a, png_b):
 
 def get_umockdev_runner(ioctl_basename):
     ioctl = os.path.join(ddir, "{}.ioctl".format(ioctl_basename))
-    device = os.path.join(ddir, "device")
-    dev = open(ioctl).readline().strip()
-    assert dev.startswith('@DEV ')
-    dev = dev[5:]
+    pcap = os.path.join(ddir, "{}.pcapng".format(ioctl_basename))
 
-    umockdev = ['umockdev-run', '-d', device,
-                '-i', "%s=%s" % (dev, ioctl),
-                '--']
+    device = os.path.join(ddir, "device")
+
+    if os.path.exists(pcap):
+        p = open(device).readline().strip()
+        assert p.startswith('P: ')
+        syspath = '/sys' + p[3:]
+
+        umockdev = ['umockdev-run', '-d', device,
+                    '-p', "%s=%s" % (syspath, pcap),
+                    '--']
+    else:
+        dev = open(ioctl).readline().strip()
+        assert dev.startswith('@DEV ')
+        dev = dev[5:]
+
+        umockdev = ['umockdev-run', '-d', device,
+                    '-i', "%s=%s" % (dev, ioctl),
+                    '--']
     wrapper = os.getenv('LIBFPRINT_TEST_WRAPPER')
     return umockdev + (wrapper.split(' ') if wrapper else []) + [sys.executable]
 
