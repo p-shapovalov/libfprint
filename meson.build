@@ -95,6 +95,7 @@ virtual_drivers = [
 ]
 
 udev_drivers = [
+	'elanspi'
 ]
 
 default_drivers = [
