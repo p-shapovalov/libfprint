@@ -23,6 +23,7 @@
 #include "drivers_api.h"
 #include "elanspi.h"
 #include "fpi-spi-transfer.h"
+#include "fpi-log.h"
 
 #include <linux/hidraw.h>
 #include <sys/ioctl.h>
@@ -46,6 +47,7 @@ struct _FpiDeviceElanSpi {
 	guint8 sensor_reg_vref1, sensor_reg_28, sensor_reg_27, sensor_reg_dac2;
 	/* end init info */
 
+	/* calibration info */
 	union {
 		struct {
 			guint8 dac_value;
@@ -185,6 +187,261 @@ enum elanspi_write_regtable_state {
 	ELANSPI_WRTABLE_ITERATE,
 	ELANSPI_WRTABLE_NSTATES
 };
+
+/* helpers */
+
+static void elanspi_do_hwreset(FpiDeviceElanSpi *self, GError **err);
+static void elanspi_do_swreset(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer);
+static void elanspi_do_startcalib(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer);
+static void elanspi_do_selectpage(FpiDeviceElanSpi *self, guint8 page, FpiSpiTransfer *xfer);
+
+static void elanspi_single_read_cmd(FpiDeviceElanSpi *self, guint8 cmd_id, guint8 *data_out, FpiSpiTransfer *xfer);
+
+static void elanspi_read_status(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer);
+static void elanspi_read_width(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer);
+static void elanspi_read_height(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer);
+static void elanspi_read_version(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer);
+
+static void elanspi_read_register(FpiDeviceElanSpi *self, guint8 reg_id, guint8 *data_out, FpiSpiTransfer *xfer);
+static void elanspi_write_register(FpiDeviceElanSpi *self, guint8 reg_id, guint8 data_in, FpiSpiTransfer *xfer);
+
+static void elanspi_determine_sensor(FpiDeviceElanSpi *self, GError **err) {
+	guint8 raw_height = self->sensor_height;
+	guint8 raw_width = self->sensor_width;
+
+	if ( ((raw_height == 0xa1) && (raw_width == 0xa1)) ||
+	     ((raw_height == 0xd1) && (raw_width == 0x51)) ||
+	     ((raw_height == 0xc1) && (raw_width == 0x39)) ) {
+		self->sensor_ic_version = 0; // Version 0
+		self->sensor_width = raw_width - 1;
+		self->sensor_height = raw_height - 1;
+	}
+	else {
+		// If the sensor is exactly 96x96 (0x60 x 0x60), the version is the high bit of register 17
+		if (raw_width == 0x60 && raw_height == 0x60) {
+			self->sensor_ic_version = (self->sensor_reg_17 & 0x80) ? 1 : 0;
+		}
+		else {
+			if ( ((raw_height != 0xa0) || (raw_width != 0x50)) &&
+				 ((raw_height != 0x90) || (raw_width != 0x40)) &&
+				 ((raw_height != 0x78) || (raw_width != 0x78)) ) {
+				if ( ((raw_height != 0x40) || (raw_width != 0x58)) &&
+				     ((raw_height != 0x50) || (raw_width != 0x50)) ) {
+					// Old sensor hack??
+					self->sensor_width = 0x78;
+					self->sensor_height = 0x78;
+					self->sensor_ic_version = 0;
+				}
+				else {
+					// Otherwise, read the version 'normally'
+					self->sensor_ic_version = (self->sensor_raw_version & 0x70) >> 4;
+				}
+			}
+			else {
+				self->sensor_ic_version = 1;
+			}
+		}
+	}
+
+	fp_dbg("<init/detect> after hardcoded lookup; %dx%d, version %d", self->sensor_width, self->sensor_height, self->sensor_ic_version);
+
+	for (const struct elanspi_sensor_entry *entry = elanspi_sensor_table; entry->name; ++entry) {
+		if (entry->ic_version == self->sensor_ic_version && entry->width == self->sensor_width && entry->height == self->sensor_height) {
+			self->sensor_id = entry->sensor_id;
+			self->sensor_otp = entry->is_otp_model;
+
+			fp_dbg("<init/detect> found sensor ID %d => [%s] (%d x %d)", self->sensor_id, entry->name, self->sensor_width, self->sensor_height);
+			break;
+		}
+	}
+
+	if (self->sensor_id == 0xff) {
+		*err = fpi_device_error_new_msg(FP_DEVICE_ERROR_NOT_SUPPORTED, "unknown sensor (%dx%d, v%d)", self->sensor_width, self->sensor_height, self->sensor_ic_version);
+		return;
+	}
+}
+
+static void elanspi_init_ssm_handler(FpiSsm *ssm, FpDevice *dev) {
+	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
+	FpiSpiTransfer   *xfer = NULL;
+	GError           *err  = NULL;
+	FpiSsm           *chld = NULL;
+
+	switch (fpi_ssm_get_cur_state(ssm)) {
+		case ELANSPI_INIT_READ_STATUS1:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_status(self, &self->sensor_status, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_HWSWRESET:
+			fp_dbg("<init> got status %02x", self->sensor_status);
+			elanspi_do_hwreset(self, &err);
+			fp_dbg("<init> sync hw reset");
+			if (err) {
+				fp_err("<init> sync hw reset failed");
+				fpi_ssm_mark_failed(ssm, err);
+				return;
+			}
+do_sw_reset:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_do_swreset(self, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_READ_HEIGHT:
+			fp_dbg("<init> sw reset ok");
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_height(self, &self->sensor_height, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_READ_WIDTH:
+			fp_dbg("<init> raw height = %d", self->sensor_height);
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_width(self, &self->sensor_width, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_READ_REG17:
+			fp_dbg("<init> raw width = %d", self->sensor_width);
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_register(self, 0x17, &self->sensor_reg_17, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_READ_VERSION:
+			fp_dbg("<init> raw reg17 = %d", self->sensor_reg_17);
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_version(self, &self->sensor_raw_version, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_SWRESET2:
+			fp_dbg("<init> raw version = %02x", self->sensor_raw_version);
+			elanspi_determine_sensor(self, &err);
+			if (err) {
+				fp_err("<init> sensor detection error");
+				fpi_ssm_mark_failed(ssm, err);
+				return;
+			}
+			// reset again
+			goto do_sw_reset;
+		case ELANSPI_INIT_OTP_READ_VREF1:
+			// is this sensor otp?
+			if (!self->sensor_otp) {
+				// go to calibration
+				fpi_ssm_jump_to_state(ssm, ELANSPI_INIT_CALIBRATE);
+				return;
+			}
+			// otherwise, begin otp
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_register(self, 0x3d, &self->sensor_reg_vref1, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_OTP_WRITE_VREF1:
+			// mask out low bits
+			self->sensor_reg_vref1 &= 0x3f;
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x3d, self->sensor_reg_vref1, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_OTP_WRITE_0x28:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x28, 0x78, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		// begin loop
+		case ELANSPI_INIT_OTP_LOOP_READ_0x28:
+			// begin read of 0x28
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_register(self, 0x28, &self->sensor_reg_28, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_OTP_LOOP_READ_0x27:
+			if (self->sensor_reg_28 & 0x40) {
+				// try again
+				fp_dbg("<init/otp> looping");
+				fpi_ssm_jump_to_state(ssm, ELANSPI_INIT_OTP_LOOP_READ_0x28);
+				return;
+			}
+			// otherwise, read reg 27
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_register(self, 0x27, &self->sensor_reg_27, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_OTP_LOOP_UPDATEDAC_READ_DAC2:
+			// if high bit set, exit with mode 2
+			if (self->sensor_reg_27 & 0x80) {
+				self->sensor_vcm_mode = 2;
+				fpi_ssm_jump_to_state(ssm, ELANSPI_INIT_OTP_WRITE_0xb);
+				return;
+			}
+			// if low two bits are not set, loop
+			if ((self->sensor_reg_27 & 6) != 6) {
+				// try again
+				fp_dbg("<init/otp> looping");
+				fpi_ssm_jump_to_state(ssm, ELANSPI_INIT_OTP_LOOP_READ_0x28);
+				return;
+			}
+			// otherwise, set vcm mode from low bit and read dac2
+			self->sensor_vcm_mode = self->sensor_reg_27 & 1;
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_register(self, 0x7, &self->sensor_reg_dac2, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_OTP_LOOP_UPDATEDAC_WRITE_DAC2:
+			// set high bit and rewrite
+			self->sensor_reg_dac2 |= 0x80;
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x7, self->sensor_reg_dac2, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_OTP_LOOP_UPDATEDAC_WRITE_10:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0xa, 0x97, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		// end loop, joins to here on early exits
+		case ELANSPI_INIT_OTP_WRITE_0xb:
+			fp_dbg("<init/otp> got vcm mode = %d", self->sensor_vcm_mode);
+			// if mode is 0, skip to calibration
+			if (self->sensor_vcm_mode == 0) {
+				fpi_ssm_jump_to_state(ssm, ELANSPI_INIT_CALIBRATE);
+				return;
+			}
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0xb, self->sensor_vcm_mode == 2 ? 0x72 : 0x71, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_OTP_WRITE_0xc:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0xc, self->sensor_vcm_mode == 2 ? 0x62 : 0x49, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_CALIBRATE:
+			fp_dbg("<init/calibrate> starting calibrate");
+			// if sensor is hv
+			if (self->sensor_id == 0xe) {
+				chld = fpi_ssm_new(dev, elanspi_calibrate_hv_handler, ELANSPI_CALIBHV_NSTATES);
+			}
+			else {
+				chld = fpi_ssm_new(dev, elanspi_calibrate_old_handler, ELANSPI_CALIBHV_NSTATES);
+			}
+			fpi_ssm_start_subsm(ssm, chld);
+			return;
+	}
+}
 
 static void dev_open(FpImageDevice *dev) {
 	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
