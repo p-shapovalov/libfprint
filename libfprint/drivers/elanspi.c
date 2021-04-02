@@ -51,7 +51,6 @@ struct _FpiDeviceElanSpi {
 	union {
 		struct {
 			guint8 dac_value;
-			guint8 otp_timeout;
 			guint8 line_ptr;
 		} old_data;
 		struct {
@@ -107,11 +106,13 @@ static void elanspi_do_hwreset(FpiDeviceElanSpi *self, GError **err) {
 enum elanspi_init_state {
 	ELANSPI_INIT_READ_STATUS1,
 	ELANSPI_INIT_HWSWRESET, // fused b.c. hw reset is currently sync
+	ELANSPI_INIT_SWRESETDELAY1,
 	ELANSPI_INIT_READ_HEIGHT,
 	ELANSPI_INIT_READ_WIDTH,
 	ELANSPI_INIT_READ_REG17,   // both of these states finish setting up sensor settings
 	ELANSPI_INIT_READ_VERSION, // can jump straight to calibrate
 	ELANSPI_INIT_SWRESET2,
+	ELANSPI_INIT_SWRESETDELAY2,
 	ELANSPI_INIT_OTP_READ_VREF1,
 	ELANSPI_INIT_OTP_WRITE_VREF1,
 	ELANSPI_INIT_OTP_WRITE_0x28,
@@ -131,6 +132,7 @@ enum elanspi_init_state {
 enum elanspi_calibrate_old_state {
 	ELANSPI_CALIBOLD_UNPROTECT,
 	ELANSPI_CALIBOLD_WRITE_STARTCALIB,
+	ELANSPI_CALIBOLD_STARTCALIBDELAY,
 	ELANSPI_CALIBOLD_SEND_REGTABLE,
 	// calibrate dac base value
 	ELANSPI_CALIBOLD_DACBASE_CAPTURE,
@@ -146,8 +148,9 @@ enum elanspi_calibrate_old_state {
 	ELANSPI_CALIBOLD_PROTECT,
 	// capture bg image
 	ELANSPI_CALIBOLD_BG_CAPTURE, // jumps to end of ssm on ok
+	ELANSPI_CALIBOLD_BG_SAVE,
 	// jump to reset to 0 but fail too
-	ELANSPI_CALIBOLD_EXIT_ERR,
+	ELANSPI_CALIBOLD_EXIT_ERR, // currently unused
 	ELANSPI_CALIBOLD_NSTATES
 };
 
@@ -193,6 +196,7 @@ enum elanspi_write_regtable_state {
 static void elanspi_do_hwreset(FpiDeviceElanSpi *self, GError **err);
 static void elanspi_do_swreset(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer);
 static void elanspi_do_startcalib(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer);
+static void elanspi_do_capture(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer);
 static void elanspi_do_selectpage(FpiDeviceElanSpi *self, guint8 page, FpiSpiTransfer *xfer);
 
 static void elanspi_single_read_cmd(FpiDeviceElanSpi *self, guint8 cmd_id, guint8 *data_out, FpiSpiTransfer *xfer);
@@ -261,6 +265,218 @@ static void elanspi_determine_sensor(FpiDeviceElanSpi *self, GError **err) {
 	}
 }
 
+static void elanspi_capture_old_line_handler(FpiSpiTransfer *transfer, FpDevice *dev, gpointer unused_data, GError *error) {
+	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
+
+	if (error) {
+		fpi_ssm_mark_failed(transfer->ssm, error);
+		return;
+	}
+
+	// copy buffer from line into last_image
+	for (int col = 0; col < self->sensor_width; ++col) {
+		guint8 low =  transfer->buffer_rd[col*2 + 1];
+		guint8 high = transfer->buffer_rd[col*2];
+
+		self->last_image[self->sensor_width * self->old_data.line_ptr + col] = low + high*0x100;
+	}
+
+	// increment line ptr
+	self->old_data.line_ptr++;
+	// if there is still data, continue from check lineready
+	if (self->old_data.line_ptr < self->sensor_height) {
+		fpi_ssm_jump_to_state(transfer->ssm, ELANSPI_CAPTOLD_CHECK_LINEREADY);
+	}
+	else {
+		// otherwise finish succesfully
+		fpi_ssm_mark_completed(transfer->ssm);
+	}
+}
+
+static void elanspi_capture_old_handler(FpiSsm *ssm, FpDevice *dev) {
+	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
+	FpiSpiTransfer   *xfer = NULL;
+
+	switch (fpi_ssm_get_cur_state(ssm)) {
+		case ELANSPI_CAPTOLD_WRITE_CAPTURE:
+			// reset capture state
+			self->old_data.line_ptr = 0;
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_do_capture(self, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CAPTOLD_CHECK_LINEREADY:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_status(self, &self->sensor_status, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CAPTOLD_RECV_LINE:
+			// is the sensor ready?
+			if (!(self->sensor_status & 4)) {
+				// check again
+				fpi_ssm_jump_to_state(ssm, ELANSPI_CAPTOLD_CHECK_LINEREADY);
+				return;
+			}
+			// otherwise, perform a read
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			fpi_spi_transfer_write(xfer, 2);
+			xfer->buffer_wr[0] = 0x10; // receieve line
+			fpi_spi_transfer_read(xfer, self->sensor_width * 2);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), elanspi_capture_old_line_handler, NULL);
+			return;
+	}
+}
+
+static void elanspi_send_regtable_handler(FpiSsm *ssm, FpDevice *dev) {
+	FpiDeviceElanSpi               *self  = FPI_DEVICE_ELANSPI(dev);
+	FpiSpiTransfer                 *xfer  = NULL;
+	const struct elanspi_reg_entry *entry = fpi_ssm_get_data(ssm);
+
+	switch (fpi_ssm_get_cur_state(ssm)) {
+		case ELANSPI_WRTABLE_WRITE:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, entry->addr, entry->value, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_WRTABLE_ITERATE:
+			++entry;
+			if (entry->addr != 0xff) {
+				fpi_ssm_set_data(ssm, (gpointer)entry, NULL);
+				fpi_ssm_jump_to_state(ssm, ELANSPI_WRTABLE_WRITE);
+				return;
+			}
+			fpi_ssm_mark_completed(ssm);
+			return;
+	}
+}
+
+static FpiSsm * elanspi_write_regtable(FpiDeviceElanSpi *self, const struct elanspi_regtable * table) {
+	// find regtable pointer
+	const struct elanspi_reg_entry * starting_entry = table->other;
+	for (int i = 0; table->entries[i].table; ++i) {
+		if (table->entries[i].sid == self->sensor_id) {
+			starting_entry = table->entries[i].table;
+			break;
+		}
+	}
+	if (starting_entry == NULL) {
+		fp_err("<regtable> unknown regtable for sensor %d", self->sensor_id);
+		return NULL;
+	}
+
+	FpiSsm * ssm = fpi_ssm_new(FP_DEVICE(self), elanspi_send_regtable_handler, ELANSPI_WRTABLE_NSTATES);
+	fpi_ssm_set_data(ssm, (gpointer)starting_entry, NULL);
+	return ssm;
+}
+
+static int elanspi_mean_image(FpiDeviceElanSpi *self, const guint16 *img) {
+	int total = 0;
+	for (int i = 0; i < self->sensor_width * self->sensor_height; ++i) {
+		total += img[i];
+	}
+	return total / (self->sensor_width * self->sensor_height);
+}
+
+static void elanspi_calibrate_old_handler(FpiSsm *ssm, FpDevice *dev) {
+	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
+	FpiSpiTransfer   *xfer = NULL;
+	GError           *err  = NULL;
+	FpiSsm           *chld = NULL;
+	int               mean_value = 0;
+
+	switch (fpi_ssm_get_cur_state(ssm)) {
+		case ELANSPI_CALIBOLD_UNPROTECT:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x00, 0x5a, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBOLD_WRITE_STARTCALIB:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_do_startcalib(self, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBOLD_STARTCALIBDELAY:
+			fpi_ssm_next_state_delayed(ssm, 1, fpi_device_get_cancellable(dev));
+			return;
+		case ELANSPI_CALIBOLD_SEND_REGTABLE:
+			chld = elanspi_write_regtable(self, &elanspi_calibration_table_old);
+			if (chld == NULL) {
+				err = fpi_device_error_new_msg(FP_DEVICE_ERROR_NOT_SUPPORTED, "unknown calibration table for sensor");
+				fpi_ssm_mark_failed(ssm, err);
+				return;
+			}
+			fpi_ssm_start_subsm(ssm, chld);
+			return;
+		case ELANSPI_CALIBOLD_DACBASE_CAPTURE:
+		case ELANSPI_CALIBOLD_CHECKFIN_CAPTURE:
+		case ELANSPI_CALIBOLD_DACFINE_CAPTURE:
+		case ELANSPI_CALIBOLD_BG_CAPTURE:
+			chld = fpi_ssm_new(dev, elanspi_capture_old_handler, ELANSPI_CAPTOLD_NSTATES);
+			fpi_ssm_start_subsm(ssm, chld);
+			return;
+		case ELANSPI_CALIBOLD_DACBASE_WRITE_DAC1:
+			// compute dac
+			self->old_data.dac_value = ((elanspi_mean_image(self, self->last_image) & 0xffff) + 0x80) >> 8;
+			if (0x3f < self->old_data.dac_value) self->old_data.dac_value = 0x3f;
+			fp_dbg("<calibold> dac init is 0x%02x", self->old_data.dac_value);
+			// write it
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x6, self->old_data.dac_value - 0x40, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBOLD_WRITE_GAIN:
+			// check if finger was present
+			if (elanspi_mean_image(self, self->last_image) >= ELANSPI_MAX_OLD_STAGE1_CALIBRATION_MEAN) {
+				err = fpi_device_retry_new_msg(FP_DEVICE_RETRY_REMOVE_FINGER, "finger on sensor during calibration");
+				fpi_ssm_mark_failed(ssm, err);
+				return;
+			}
+			// if ok, increase gain
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x5, 0x6f, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBOLD_DACFINE_WRITE_DAC1:
+			// todo add a timeout to this code
+			mean_value = elanspi_mean_image(self, self->last_image);
+			if (mean_value >= ELANSPI_MIN_OLD_STAGE2_CALBIRATION_MEAN && mean_value <= ELANSPI_MAX_OLD_STAGE2_CALBIRATION_MEAN) {
+				// finished calibration, goto bg
+				fpi_ssm_next_state(ssm);
+				return;
+			}
+
+			if (mean_value < (ELANSPI_MIN_OLD_STAGE2_CALBIRATION_MEAN + (ELANSPI_MAX_OLD_STAGE2_CALBIRATION_MEAN - ELANSPI_MIN_OLD_STAGE2_CALBIRATION_MEAN) / 2))
+				self->old_data.dac_value--;
+			else
+				self->old_data.dac_value++;
+
+			// write it
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x6, self->old_data.dac_value - 0x40, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBOLD_PROTECT:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x00, 0x00, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBOLD_BG_SAVE:
+			memcpy(self->bg_image, self->last_image, self->sensor_height * self->sensor_width * 2);
+			fpi_ssm_mark_completed(ssm);
+			return;
+	}
+}
+
 static void elanspi_init_ssm_handler(FpiSsm *ssm, FpDevice *dev) {
 	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
 	FpiSpiTransfer   *xfer = NULL;
@@ -288,6 +504,10 @@ do_sw_reset:
 			xfer->ssm = ssm;
 			elanspi_do_swreset(self, xfer);
 			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_INIT_SWRESETDELAY1:
+		case ELANSPI_INIT_SWRESETDELAY2:
+			fpi_ssm_next_state_delayed(ssm, 4, fpi_device_get_cancellable(dev));
 			return;
 		case ELANSPI_INIT_READ_HEIGHT:
 			fp_dbg("<init> sw reset ok");
@@ -325,6 +545,11 @@ do_sw_reset:
 				fpi_ssm_mark_failed(ssm, err);
 				return;
 			}
+			// allocate memory
+			g_clear_pointer(&self->bg_image, g_free);
+			g_clear_pointer(&self->last_image, g_free);
+			self->last_image = g_malloc0(self->sensor_width * self->sensor_height * 2);
+			self->bg_image = g_malloc0(self->sensor_width * self->sensor_height * 2);
 			// reset again
 			goto do_sw_reset;
 		case ELANSPI_INIT_OTP_READ_VREF1:
@@ -436,7 +661,7 @@ do_sw_reset:
 				chld = fpi_ssm_new(dev, elanspi_calibrate_hv_handler, ELANSPI_CALIBHV_NSTATES);
 			}
 			else {
-				chld = fpi_ssm_new(dev, elanspi_calibrate_old_handler, ELANSPI_CALIBHV_NSTATES);
+				chld = fpi_ssm_new(dev, elanspi_calibrate_old_handler, ELANSPI_CALIBOLD_NSTATES);
 			}
 			fpi_ssm_start_subsm(ssm, chld);
 			return;
@@ -481,6 +706,7 @@ static void fpi_device_elanspi_finalize(GObject *this) {
 	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(this);
 
 	g_clear_pointer(&self->bg_image, g_free);
+	g_clear_pointer(&self->last_image, g_free);
 
 	G_OBJECT_CLASS(fpi_device_elanspi_parent_class)->finalize(this);
 }

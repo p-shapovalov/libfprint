@@ -311,3 +311,8 @@ static const FpIdEntry elanspi_id_table[] = {
 	{.udev_types = ELANSPI_UDEV_TYPES, .spi_acpi_id = "ELAN70A1", .hid_id = {.vid = ELANSPI_TP_VID, .pid = 0x30b2}, .driver_data = ELANSPI_NO_ROTATE},
 	{.udev_types = 0}
 };
+
+#define ELANSPI_MAX_OLD_STAGE1_CALIBRATION_MEAN 1000
+
+#define ELANSPI_MIN_OLD_STAGE2_CALBIRATION_MEAN 3000
+#define ELANSPI_MAX_OLD_STAGE2_CALBIRATION_MEAN 8000
