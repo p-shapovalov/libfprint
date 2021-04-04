@@ -239,7 +239,7 @@ static void elanspi_read_version(FpiDeviceElanSpi *self, guint8 *data_out, FpiSp
 }
 
 static void elanspi_read_register(FpiDeviceElanSpi *self, guint8 reg_id, guint8 *data_out, FpiSpiTransfer *xfer) {
-	fpi_spi_transfer_write(xfer, 2);
+	fpi_spi_transfer_write(xfer, 1);
 	xfer->buffer_wr[0] = reg_id | 0x40;
 	fpi_spi_transfer_read_full(xfer, data_out, 1, NULL);
 }
@@ -755,6 +755,7 @@ do_sw_reset:
 			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
 			return;
 		case ELANSPI_INIT_READ_WIDTH:
+			self->sensor_height++;
 			fp_dbg("<init> raw height = %d", self->sensor_height);
 			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
 			xfer->ssm = ssm;
@@ -762,6 +763,7 @@ do_sw_reset:
 			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
 			return;
 		case ELANSPI_INIT_READ_REG17:
+			self->sensor_width++;
 			fp_dbg("<init> raw width = %d", self->sensor_width);
 			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
 			xfer->ssm = ssm;
