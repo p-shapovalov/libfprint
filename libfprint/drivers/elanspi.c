@@ -55,6 +55,9 @@ struct _FpiDeviceElanSpi {
 		} old_data;
 		struct {
 			guint16 gdac_value;
+			guint16 gdac_step;
+			guint16 best_gdac;
+			guint16 best_meandiff;
 		} hv_data;
 	};
 
@@ -173,16 +176,20 @@ enum elanspi_calibrate_hv_state {
 	ELANSPI_CALIBHV_WRITE_GDAC_H,
 	ELANSPI_CALIBHV_WRITE_GDAC_L,
 	ELANSPI_CALIBHV_CAPTURE,
+	ELANSPI_CALIBHV_PROCESS,
 	ELANSPI_CALIBHV_WRITE_BEST_GDAC_H,
 	ELANSPI_CALIBHV_WRITE_BEST_GDAC_L,
-	
+	ELANSPI_CALIBHV_PROTECT,
+	ELANSPI_CALIBHV_BG_CAPTURE,
+	ELANSPI_CALIBHV_BG_SAVE,
 	ELANSPI_CALIBHV_NSTATES
 };
 
 enum elanspi_capture_hv_state {
 	ELANSPI_CAPTHV_WRITE_CAPTURE,
-	ELANSPI_CHECK_READY,
-	ELANSPI_RECV_IMAGE
+	ELANSPI_CAPTHV_CHECK_READY,
+	ELANSPI_CAPTHV_RECV_IMAGE,
+	ELANSPI_CAPTHV_NSTATES
 };
 
 enum elanspi_write_regtable_state {
@@ -474,6 +481,199 @@ static void elanspi_calibrate_old_handler(FpiSsm *ssm, FpDevice *dev) {
 			memcpy(self->bg_image, self->last_image, self->sensor_height * self->sensor_width * 2);
 			fpi_ssm_mark_completed(ssm);
 			return;
+	}
+}
+
+static void elanspi_capture_hv_image_handler(FpiSpiTransfer *transfer, FpDevice *dev, gpointer unused_data, GError *error) {
+	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
+
+	if (error) {
+		fpi_ssm_mark_failed(transfer->ssm, error);
+		return;
+	}
+
+	int i, outptr;
+	guint16 value = 0;
+
+	for (i = 0, outptr = 0; i < transfer->length_rd && outptr < (self->sensor_height*self->sensor_width*2); ++i) {
+		if (transfer->buffer_rd[i] != 0xff) {
+			if (outptr % 2) {
+				value <<= 8;
+				value |= transfer->buffer_rd[i];
+				self->last_image[outptr / 2] = value;
+			}
+			else {
+				value = transfer->buffer_rd[i];
+			}
+			++outptr;
+		}
+	}
+
+	if (outptr != (self->sensor_height * self->sensor_width * 2)) {
+		fp_warn("<capture/hv> did not receive full image");
+		// mark ssm failed
+		error = fpi_device_error_new_msg(FP_DEVICE_ERROR_PROTO, "hv image receieve did not fill buffer");
+		fpi_ssm_mark_failed(transfer->ssm, error);
+		return;
+	}
+
+	fpi_ssm_mark_completed(transfer->ssm);
+}
+
+
+static void elanspi_capture_hv_handler(FpiSsm *ssm, FpDevice *dev) {
+	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
+	FpiSpiTransfer   *xfer = NULL;
+
+	switch (fpi_ssm_get_cur_state(ssm)) {
+		case ELANSPI_CAPTHV_WRITE_CAPTURE:
+			// reset capture state
+			self->old_data.line_ptr = 0;
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_do_capture(self, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CAPTHV_CHECK_READY:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_read_status(self, &self->sensor_status, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CAPTHV_RECV_IMAGE:
+			// is the sensor ready?
+			if (!(self->sensor_status & 4)) {
+				// check again
+				fpi_ssm_jump_to_state(ssm, ELANSPI_CAPTHV_CHECK_READY);
+				return;
+			}
+			// otherwise, read the image
+			// the hv sensors seem to  use 128 bytes of padding(?) this is only tested on the 0xe sensors
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			fpi_spi_transfer_write(xfer, 2);
+			xfer->buffer_wr[0] = 0x10; // receieve line
+			fpi_spi_transfer_read(xfer, self->sensor_height * (self->sensor_width * 2 + 48));
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), elanspi_capture_hv_image_handler, NULL);
+			return;
+	}
+}
+
+static void elanspi_calibrate_hv_handler(FpiSsm *ssm, FpDevice *dev) {
+	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
+	FpiSpiTransfer   *xfer = NULL;
+	GError           *err  = NULL;
+	FpiSsm           *chld = NULL;
+	int               mean_diff = 0;
+
+	switch (fpi_ssm_get_cur_state(ssm)) {
+		case ELANSPI_CALIBHV_SELECT_PAGE0_0:
+			// initialize gdac
+			self->hv_data.gdac_value = 0x100;
+			self->hv_data.gdac_step  = 0x100;
+			self->hv_data.best_gdac  = 0x0;
+			self->hv_data.best_meandiff = 0xffff;
+		case ELANSPI_CALIBHV_SELECT_PAGE0_1:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_do_selectpage(self, 0, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBHV_WRITE_STARTCALIB:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_do_startcalib(self, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBHV_UNPROTECT:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x00, 0x5a, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBHV_SEND_REGTABLE0:
+			chld = elanspi_write_regtable(self, &elanspi_calibration_table_new_page0);
+			if (chld == NULL) {
+				err = fpi_device_error_new_msg(FP_DEVICE_ERROR_NOT_SUPPORTED, "unknown calibration table for sensor");
+				fpi_ssm_mark_failed(ssm, err);
+				return;
+			}
+			fpi_ssm_start_subsm(ssm, chld);
+			return;
+		case ELANSPI_CALIBHV_SELECT_PAGE1:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_do_selectpage(self, 1, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBHV_SEND_REGTABLE1:
+			chld = elanspi_write_regtable(self, &elanspi_calibration_table_new_page1);
+			if (chld == NULL) {
+				err = fpi_device_error_new_msg(FP_DEVICE_ERROR_NOT_SUPPORTED, "unknown calibration table for sensor");
+				fpi_ssm_mark_failed(ssm, err);
+				return;
+			}
+			fpi_ssm_start_subsm(ssm, chld);
+			return;
+		case ELANSPI_CALIBHV_WRITE_GDAC_H:
+		case ELANSPI_CALIBHV_WRITE_BEST_GDAC_H:
+			if (fpi_ssm_get_cur_state(ssm) == ELANSPI_CALIBHV_WRITE_BEST_GDAC_H)
+				self->hv_data.gdac_value = self->hv_data.best_gdac;
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x06, (self->hv_data.gdac_value >> 2) & 0xff, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBHV_WRITE_GDAC_L:
+		case ELANSPI_CALIBHV_WRITE_BEST_GDAC_L:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x07, self->hv_data.gdac_value & 3, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBHV_CAPTURE:
+		case ELANSPI_CALIBHV_BG_CAPTURE:
+			chld = fpi_ssm_new(dev, elanspi_capture_hv_handler, ELANSPI_CAPTHV_NSTATES);
+			fpi_ssm_start_subsm(ssm, chld);
+			return;
+		case ELANSPI_CALIBHV_PROCESS:
+			// compute mean
+			mean_diff = abs(elanspi_mean_image(self, self->last_image) - ELANSPI_HV_CALIBRATION_TARGET_MEAN);
+			if (mean_diff < 100) {
+				// exit early, jump right to protect
+				fpi_ssm_jump_to_state(ssm, ELANSPI_CALIBHV_PROTECT);
+				return;
+			}
+			if (mean_diff < self->hv_data.best_meandiff) {
+				self->hv_data.best_meandiff = mean_diff;
+				self->hv_data.best_gdac = self->hv_data.gdac_value;
+			}
+			// shrink step
+			self->hv_data.gdac_step /= 2;
+			if (self->hv_data.gdac_step == 0) {
+				// exit, using best value
+				fpi_ssm_jump_to_state(ssm, ELANSPI_CALIBHV_WRITE_BEST_GDAC_H);
+				return;
+			}
+			// update gdac
+			if (elanspi_mean_image(self, self->last_image) < ELANSPI_HV_CALIBRATION_TARGET_MEAN)
+				self->hv_data.gdac_value -= self->hv_data.gdac_step;
+			else
+				self->hv_data.gdac_value += self->hv_data.gdac_step;
+			// advance back to capture
+			fpi_ssm_jump_to_state(ssm, ELANSPI_CALIBHV_WRITE_GDAC_H);
+			return;
+		case ELANSPI_CALIBHV_PROTECT:
+			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
+			xfer->ssm = ssm;
+			elanspi_write_register(self, 0x00, 0x00, xfer);
+			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
+			return;
+		case ELANSPI_CALIBHV_BG_SAVE:
+			memcpy(self->bg_image, self->last_image, self->sensor_height * self->sensor_width * 2);
+			fpi_ssm_mark_completed(ssm);
+			return;
+
 	}
 }
 

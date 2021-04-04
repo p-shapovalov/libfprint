@@ -306,7 +306,8 @@ static const struct elanspi_regtable elanspi_calibration_table_new_page1 = {
 static const FpIdEntry elanspi_id_table[] = {
 	{.udev_types = ELANSPI_UDEV_TYPES, .spi_acpi_id = "ELAN7001", .hid_id = {.vid = ELANSPI_TP_VID, .pid = 0x3057}, .driver_data = ELANSPI_180_ROTATE},
 	{.udev_types = ELANSPI_UDEV_TYPES, .spi_acpi_id = "ELAN7001", .hid_id = {.vid = ELANSPI_TP_VID, .pid = 0x3087}, .driver_data = ELANSPI_180_ROTATE},
-	{.udev_types = ELANSPI_UDEV_TYPES, .spi_acpi_id = "ELAN70A1", .hid_id = {.vid = ELANSPI_TP_VID, .pid = 0x3134}, .driver_data = ELANSPI_NO_ROTATE},
+	{.udev_types = ELANSPI_UDEV_TYPES, .spi_acpi_id = "ELAN70A1", .hid_id = {.vid = ELANSPI_TP_VID, .pid = 0x3134}, .driver_data = ELANSPI_180_ROTATE},
+	{.udev_types = ELANSPI_UDEV_TYPES, .spi_acpi_id = "ELAN7001", .hid_id = {.vid = ELANSPI_TP_VID, .pid = 0x3148}, .driver_data = ELANSPI_180_ROTATE},
 	{.udev_types = ELANSPI_UDEV_TYPES, .spi_acpi_id = "ELAN7001", .hid_id = {.vid = ELANSPI_TP_VID, .pid = 0x30b2}, .driver_data = ELANSPI_NO_ROTATE},
 	{.udev_types = ELANSPI_UDEV_TYPES, .spi_acpi_id = "ELAN70A1", .hid_id = {.vid = ELANSPI_TP_VID, .pid = 0x30b2}, .driver_data = ELANSPI_NO_ROTATE},
 	{.udev_types = 0}
@@ -316,3 +317,5 @@ static const FpIdEntry elanspi_id_table[] = {
 
 #define ELANSPI_MIN_OLD_STAGE2_CALBIRATION_MEAN 3000
 #define ELANSPI_MAX_OLD_STAGE2_CALBIRATION_MEAN 8000
+
+#define ELANSPI_HV_CALIBRATION_TARGET_MEAN 3000
