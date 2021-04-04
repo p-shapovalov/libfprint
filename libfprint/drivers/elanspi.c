@@ -200,21 +200,55 @@ enum elanspi_write_regtable_state {
 
 /* helpers */
 
-static void elanspi_do_hwreset(FpiDeviceElanSpi *self, GError **err);
-static void elanspi_do_swreset(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer);
-static void elanspi_do_startcalib(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer);
-static void elanspi_do_capture(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer);
-static void elanspi_do_selectpage(FpiDeviceElanSpi *self, guint8 page, FpiSpiTransfer *xfer);
+static void elanspi_do_swreset(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer) {
+	fpi_spi_transfer_write(xfer, 1);
+	xfer->buffer_wr[0] = 0x31;
+}
+static void elanspi_do_startcalib(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer) {
+	fpi_spi_transfer_write(xfer, 1);
+	xfer->buffer_wr[0] = 0x4;
+}
+static void elanspi_do_capture(FpiDeviceElanSpi *self, FpiSpiTransfer *xfer) {
+	fpi_spi_transfer_write(xfer, 1);
+	xfer->buffer_wr[0] = 0x1;
+}
+static void elanspi_do_selectpage(FpiDeviceElanSpi *self, guint8 page, FpiSpiTransfer *xfer) {
+	fpi_spi_transfer_write(xfer, 2);
+	xfer->buffer_wr[0] = 0x7;
+	xfer->buffer_wr[1] = page;
+}
 
-static void elanspi_single_read_cmd(FpiDeviceElanSpi *self, guint8 cmd_id, guint8 *data_out, FpiSpiTransfer *xfer);
+static void elanspi_single_read_cmd(FpiDeviceElanSpi *self, guint8 cmd_id, guint8 *data_out, FpiSpiTransfer *xfer) {
+	fpi_spi_transfer_write(xfer, 2);
+	xfer->buffer_wr[0] = cmd_id;
+	xfer->buffer_wr[1] = 0xff;
+	fpi_spi_transfer_read_full(xfer, data_out, 1, NULL);
+}
 
-static void elanspi_read_status(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer);
-static void elanspi_read_width(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer);
-static void elanspi_read_height(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer);
-static void elanspi_read_version(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer);
+static void elanspi_read_status(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer) {
+	elanspi_single_read_cmd(self, 0x3, data_out, xfer);
+}
+static void elanspi_read_width(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer) {
+	elanspi_single_read_cmd(self, 0x9, data_out, xfer);
+}
+static void elanspi_read_height(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer) {
+	elanspi_single_read_cmd(self, 0x8, data_out, xfer);
+}
+static void elanspi_read_version(FpiDeviceElanSpi *self, guint8 *data_out, FpiSpiTransfer *xfer) {
+	elanspi_single_read_cmd(self, 0xa, data_out, xfer);
+}
 
-static void elanspi_read_register(FpiDeviceElanSpi *self, guint8 reg_id, guint8 *data_out, FpiSpiTransfer *xfer);
-static void elanspi_write_register(FpiDeviceElanSpi *self, guint8 reg_id, guint8 data_in, FpiSpiTransfer *xfer);
+static void elanspi_read_register(FpiDeviceElanSpi *self, guint8 reg_id, guint8 *data_out, FpiSpiTransfer *xfer) {
+	fpi_spi_transfer_write(xfer, 2);
+	xfer->buffer_wr[0] = reg_id | 0x40;
+	fpi_spi_transfer_read_full(xfer, data_out, 1, NULL);
+}
+
+static void elanspi_write_register(FpiDeviceElanSpi *self, guint8 reg_id, guint8 data_in, FpiSpiTransfer *xfer) {
+	fpi_spi_transfer_write(xfer, 2);
+	xfer->buffer_wr[0] = reg_id | 0x80;
+	xfer->buffer_wr[1] = data_in;
+}
 
 static void elanspi_determine_sensor(FpiDeviceElanSpi *self, GError **err) {
 	guint8 raw_height = self->sensor_height;
