@@ -868,7 +868,7 @@ do_sw_reset:
 	}
 }
 
-static void dev_open(FpImageDevice *dev) {
+static void elanspi_open(FpImageDevice *dev) {
 	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
 	GError *err = NULL;
 
@@ -886,7 +886,7 @@ static void dev_open(FpImageDevice *dev) {
 	fpi_image_device_open_complete(dev, NULL);
 }
 
-static void dev_close(FpImageDevice *dev) {
+static void elanspi_close(FpImageDevice *dev) {
 	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
 
 	if (self->spi_fd >= 0) {
@@ -894,6 +894,24 @@ static void dev_close(FpImageDevice *dev) {
 		close(self->spi_fd);
 	}
 	fpi_image_device_close_complete(dev, NULL);
+}
+
+static void elanspi_init_finish(FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+   FpImageDevice *idev = FP_IMAGE_DEVICE (dev);
+   G_DEBUG_HERE ();
+   fpi_image_device_activate_complete (idev, error);
+}
+
+static void elanspi_activate(FpImageDevice *dev) {
+	FpiSsm *ssm = fpi_ssm_new (FP_DEVICE (dev), elanspi_init_ssm_handler, ELANSPI_INIT_NSTATES);
+	fpi_ssm_start (ssm, elanspi_init_finish);
+}
+
+static void elanspi_deactivate(FpImageDevice *dev) {
+}
+
+static void elanspi_change_state(FpImageDevice *dev, FpiImageDeviceState state) {
 }
 
 static void fpi_device_elanspi_init(FpiDeviceElanSpi *self) {
@@ -923,11 +941,11 @@ static void fpi_device_elanspi_class_init(FpiDeviceElanSpiClass *klass) {
 	dev_class->nr_enroll_stages = 7; // these sensors are very hit or miss, may as well record a few extras
 
 	img_class->bz3_threshold = 10;
-	img_class->img_open = dev_open;
-	img_class->activate = dev_activate;
-	img_class->deactivate = dev_deactivate;
-	img_class->change_state = dev_change_state;
-	img_class->img_close = dev_close;
+	img_class->img_open = elanspi_open;
+	img_class->activate = elanspi_activate;
+	img_class->deactivate = elanspi_deactivate;
+	img_class->change_state = elanspi_change_state;
+	img_class->img_close = elanspi_close;
 
 	G_OBJECT_CLASS(klass)->finalize = fpi_device_elanspi_finalize;
 }
