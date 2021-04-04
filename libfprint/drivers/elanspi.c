@@ -506,6 +506,7 @@ static void elanspi_calibrate_old_handler(FpiSsm *ssm, FpDevice *dev) {
 			fpi_spi_transfer_submit(xfer, fpi_device_get_cancellable(dev), fpi_ssm_spi_transfer_cb, NULL);
 			return;
 		case ELANSPI_CALIBOLD_PROTECT:
+			fp_dbg("<calibold> calibration ok, saving bg image");
 			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
 			xfer->ssm = ssm;
 			elanspi_write_register(self, 0x00, 0x00, xfer);
@@ -674,6 +675,7 @@ static void elanspi_calibrate_hv_handler(FpiSsm *ssm, FpDevice *dev) {
 			// compute mean
 			mean_diff = abs(elanspi_mean_image(self, self->last_image) - ELANSPI_HV_CALIBRATION_TARGET_MEAN);
 			if (mean_diff < 100) {
+				fp_dbg("<calibhv> calibration ok (mdiff < 100 w/ gdac=%04x)", self->hv_data.gdac_value);
 				// exit early, jump right to protect
 				fpi_ssm_jump_to_state(ssm, ELANSPI_CALIBHV_PROTECT);
 				return;
@@ -685,6 +687,7 @@ static void elanspi_calibrate_hv_handler(FpiSsm *ssm, FpDevice *dev) {
 			// shrink step
 			self->hv_data.gdac_step /= 2;
 			if (self->hv_data.gdac_step == 0) {
+				fp_dbg("<calibhv> calibration ok (step = 0 w/ best_gdac=%04x)", self->hv_data.best_gdac);
 				// exit, using best value
 				fpi_ssm_jump_to_state(ssm, ELANSPI_CALIBHV_WRITE_BEST_GDAC_H);
 				return;
@@ -698,6 +701,7 @@ static void elanspi_calibrate_hv_handler(FpiSsm *ssm, FpDevice *dev) {
 			fpi_ssm_jump_to_state(ssm, ELANSPI_CALIBHV_WRITE_GDAC_H);
 			return;
 		case ELANSPI_CALIBHV_PROTECT:
+			fp_dbg("<calibhv> calibration ok, saving bg image");
 			xfer = fpi_spi_transfer_new(dev, self->spi_fd);
 			xfer->ssm = ssm;
 			elanspi_write_register(self, 0x00, 0x00, xfer);
