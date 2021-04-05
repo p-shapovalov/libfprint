@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "fpi-assembling.h"
 #define FP_COMPONENT "elanspi"
 
 #include "drivers_api.h"
@@ -67,6 +68,14 @@ struct _FpiDeviceElanSpi {
 	/* background / calibration parameters */
 	guint16 *bg_image;
 	guint16 *last_image;
+
+	/* assembling ctx */
+	struct fpi_frame_asmbl_ctx assembling_ctx;
+	gint fp_empty_counter;
+	GSList *fp_frame_list;
+
+	/* wait ctx */
+	gint finger_wait_debounce;
 
 	/* active SPI status info */
 	int spi_fd;
@@ -196,6 +205,20 @@ enum elanspi_write_regtable_state {
 	ELANSPI_WRTABLE_WRITE,
 	ELANSPI_WRTABLE_ITERATE,
 	ELANSPI_WRTABLE_NSTATES
+};
+
+enum elanspi_fp_capture_state {
+	ELANSPI_FPCAPT_INIT,
+	// wait for finger
+	ELANSPI_FPCAPT_WAITDOWN_CAPTURE,
+	ELANSPI_FPCAPT_WAITDOWN_PROCESS,
+	// capture full image
+	ELANSPI_FPCAPT_FP_CAPTURE,
+	ELANSPI_FPCAPT_FP_PROCESS,
+	// wait for no finger
+	ELANSPI_FPCAPT_WAITUP_CAPTURE,
+	ELANSPI_FPCAPT_WAITUP_PROCESS,
+	ELANSPI_FPCAPT_NSTATES
 };
 
 /* helpers */
@@ -908,6 +931,225 @@ do_sw_reset:
 	}
 }
 
+enum elanspi_guess_result {
+	ELANSPI_GUESS_FP,
+	ELANSPI_GUESS_EMPTY,
+	ELANSPI_GUESS_UNKNOWN
+};
+
+// in place correct image, returning number of invalid pixels
+static gint elanspi_correct_with_bg(FpiDeviceElanSpi *self, guint16 *raw_image) {
+	gint count = 0;
+	
+	for (int i = 0; i < self->sensor_width * self->sensor_height; ++i) {
+		if (raw_image[i] < self->bg_image[i]) {
+			++count;
+			raw_image[i] = 0;
+		}
+		else {
+			raw_image[i] -= self->bg_image[i];
+		}
+	}
+
+	return count;
+}
+
+static enum elanspi_guess_result elanspi_guess_image(FpiDeviceElanSpi *self, guint16 *raw_image) {
+	g_autofree guint16 * image_copy = g_malloc0(self->sensor_height * self->sensor_width * 2);
+	memcpy(image_copy, raw_image, self->sensor_height * self->sensor_width * 2);
+
+	gint invalid_percent = (100 * elanspi_correct_with_bg(self, image_copy)) / (self->sensor_height * self->sensor_width);
+	gint is_fp = 0, is_empty = 0;
+
+	gint64 mean = elanspi_mean_image(self, image_copy);
+	gint64 sq_stddev = 0;
+
+	for (int i = 0; i < self->sensor_height*self->sensor_width; ++i) {
+		gint64 j = (gint64)image_copy[i] - mean;
+		sq_stddev += j*j;
+	}
+
+	if (invalid_percent < ELANSPI_MAX_REAL_INVALID_PERCENT) ++is_fp;
+	if (invalid_percent > ELANSPI_MIN_EMPTY_INVALID_PERCENT) ++is_empty;
+
+	if (sq_stddev > ELANSPI_MIN_REAL_STDDEV) ++is_fp;
+	if (sq_stddev < ELANSPI_MAX_EMPTY_STDDEV) ++is_empty;
+
+	if (is_fp > is_empty) return ELANSPI_GUESS_FP;
+	else if (is_empty > is_fp) return ELANSPI_GUESS_EMPTY;
+	else return ELANSPI_GUESS_UNKNOWN;
+}
+
+// returns TRUE when the waiting is complete
+static gboolean elanspi_waitupdown_process(FpiDeviceElanSpi *self, enum elanspi_guess_result target) {
+	enum elanspi_guess_result guess = elanspi_guess_image(self, self->last_image);
+	if (guess == ELANSPI_GUESS_UNKNOWN) return FALSE;
+	if (guess == target) {
+		++self->finger_wait_debounce;
+		return (self->finger_wait_debounce == ELANSPI_MIN_FRAMES_DEBOUNCE);
+	}
+	else {
+		self->finger_wait_debounce = 0;
+		return FALSE;
+	}
+}
+
+static guint16 elanspi_lookup_pixel_with_rotation(FpiDeviceElanSpi *self, const guint16 *data_in, int y, int x) {
+	int rotation = fpi_device_get_driver_data(FP_DEVICE(self)) & 3;
+	if (rotation == ELANSPI_180_ROTATE) {
+		y = (self->sensor_height - y - 1);
+	}
+	return data_in[y * self->sensor_width + x];
+}
+
+static int cmp_u16(const void *a, const void *b) {
+	return (int) (*(guint16 *)a - *(guint16 *)b);
+}
+
+static void elanspi_process_frame(FpiDeviceElanSpi *self, const guint16 *data_in, guint8 *data_out) {
+	size_t frame_size = self->sensor_width * self->sensor_height;
+	guint16 data_in_sorted[frame_size];
+	memcpy(data_in_sorted, data_in, frame_size*2);
+	qsort(data_in_sorted, frame_size, 2, cmp_u16);
+	guint16 lvl0 = data_in_sorted[0];
+	guint16 lvl1 = data_in_sorted[frame_size * 3 / 10];
+	guint16 lvl2 = data_in_sorted[frame_size * 65 / 100];
+	guint16 lvl3 = data_in_sorted[frame_size - 1];
+
+	for (int i = 0; i < self->sensor_height; ++i) {
+		for (int j = 0; j < self->sensor_width; ++j) {
+			guint16 px = elanspi_lookup_pixel_with_rotation(self, data_in, i, j);
+			if (lvl0 <= px && px < lvl1)
+				px = (px - lvl0) * 99 / (lvl1 - lvl0);
+			else if (lvl1 <= px && px < lvl2)
+				px = 99 + ((px - lvl1) * 56 / (lvl2 - lvl1));
+			else                      // (lvl2 <= px && px <= lvl3)
+				px = 155 + ((px - lvl2) * 100 / (lvl3 - lvl2));
+			*data_out++ = px;
+		}
+	}
+}
+
+static void elanspi_fp_frame_stitch_and_submit(FpiDeviceElanSpi *self) {
+}
+
+static void elanspi_fp_frame_handler(FpiSsm *ssm, FpiDeviceElanSpi *self) {
+	struct fpi_frame *this_frame = NULL;
+
+	switch (elanspi_guess_image(self,self->last_image)) {
+		case ELANSPI_GUESS_UNKNOWN:
+			fp_dbg("<fp_frame> unknown, ignore...");
+			break;
+		case ELANSPI_GUESS_EMPTY:
+			++self->fp_empty_counter;
+			fp_dbg("<fp_frame> got empty");
+			if (g_slist_length(self->fp_frame_list) >= ELANSPI_MIN_FRAMES_SWIPE) {
+				fp_dbg("<fp_frame> have enough frames");
+				if (self->fp_empty_counter > 1) {
+					fp_dbg("<fp_frame> got empty debounce, finished framelist");
+finish_capture:
+					elanspi_fp_frame_stitch_and_submit(self);
+					// prepare for wait up
+					return;
+				}
+			}
+			break;
+		case ELANSPI_GUESS_FP:
+			if (self->fp_empty_counter && self->fp_frame_list) {
+				if (self->fp_empty_counter <= ELANSPI_MIN_FRAMES_SWIPE / 4) {
+					fp_dbg("<fp_frame> possible bounced fp");
+					break;
+				}
+				else {
+					fp_dbg("<fp_frame> too many empties, clearing list");
+					g_slist_free_full(self->fp_frame_list, g_free);
+					self->fp_frame_list = NULL;
+					self->fp_empty_counter = 0;
+				}
+			}
+
+			if (g_slist_length(self->fp_frame_list) > ELANSPI_MAX_FRAMES_SWIPE) {
+				fp_dbg("<fp_frame> have enough frames, exiting now");
+				goto finish_capture;
+			}
+
+			// append image
+			this_frame = g_malloc0(self->sensor_height * self->sensor_width + sizeof(struct fpi_frame));
+			elanspi_correct_with_bg(self, self->last_image);
+			elanspi_process_frame(self, self->last_image, this_frame->data);
+
+			if (self->fp_frame_list) {
+				gint difference = fpi_mean_sq_diff_norm(self->fp_frame_list->data, this_frame->data, self->sensor_height * self->sensor_width);
+				if (difference < ELANSPI_MIN_FRAME_TO_FRAME_DIFF) {
+					fp_dbg("<fp_frame> ignoring b.c. difference is too small");
+					g_free(this_frame);
+					break;
+				}
+			}
+			self->fp_frame_list = g_slist_prepend(self->fp_frame_list, this_frame);
+			break;
+	}
+
+	fpi_ssm_jump_to_state(ssm, ELANSPI_FPCAPT_FP_CAPTURE);
+}
+
+static void elanspi_fp_capture_ssm_handler(FpiSsm *ssm, FpDevice *dev) {
+	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
+	FpiSsm           *chld = NULL;
+
+	switch (fpi_ssm_get_cur_state(ssm)) {
+		case ELANSPI_FPCAPT_INIT:
+			self->finger_wait_debounce = 0;
+
+			fpi_ssm_next_state(ssm);
+			return;
+		case ELANSPI_FPCAPT_WAITDOWN_CAPTURE:
+		case ELANSPI_FPCAPT_WAITUP_CAPTURE:
+		case ELANSPI_FPCAPT_FP_CAPTURE:
+			// if sensor is hv
+			if (self->sensor_id == 0xe) {
+				chld = fpi_ssm_new(dev, elanspi_capture_hv_handler, ELANSPI_CAPTHV_NSTATES);
+			}
+			else {
+				chld = fpi_ssm_new(dev, elanspi_capture_old_handler, ELANSPI_CAPTOLD_NSTATES);
+			}
+			fpi_ssm_start_subsm(ssm, chld);
+			return;
+
+		case ELANSPI_FPCAPT_WAITDOWN_PROCESS:
+			if (!elanspi_waitupdown_process(self, ELANSPI_GUESS_FP)) {
+				// take another image
+				fpi_ssm_jump_to_state(ssm, ELANSPI_FPCAPT_WAITDOWN_CAPTURE);
+			}
+
+			// prepare to take actual image
+			self->finger_wait_debounce = 0;
+			if (self->fp_frame_list) {
+				g_slist_free_full(self->fp_frame_list, g_free);
+			}
+			self->fp_frame_list = NULL;
+			self->fp_empty_counter = 0;
+
+			// jump
+			fpi_ssm_jump_to_state(ssm, ELANSPI_FPCAPT_FP_CAPTURE);
+			return;
+
+		case ELANSPI_FPCAPT_FP_PROCESS:
+			elanspi_fp_frame_handler(ssm, self);
+			return;
+		
+		case ELANSPI_FPCAPT_WAITUP_PROCESS:
+			if (!elanspi_waitupdown_process(self, ELANSPI_GUESS_EMPTY)) {
+				// take another image
+				fpi_ssm_jump_to_state(ssm, ELANSPI_FPCAPT_WAITUP_CAPTURE);
+			}
+
+			// finish
+			fpi_ssm_mark_completed(ssm);
+			return;
+	}
+}
+
 static void elanspi_open(FpImageDevice *dev) {
 	FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI(dev);
 	GError *err = NULL;
@@ -965,6 +1207,10 @@ static void fpi_device_elanspi_finalize(GObject *this) {
 
 	g_clear_pointer(&self->bg_image, g_free);
 	g_clear_pointer(&self->last_image, g_free);
+	if (self->fp_frame_list) {
+		g_slist_free_full(self->fp_frame_list, g_free);
+		self->fp_frame_list = NULL;
+	}
 
 	G_OBJECT_CLASS(fpi_device_elanspi_parent_class)->finalize(this);
 }
