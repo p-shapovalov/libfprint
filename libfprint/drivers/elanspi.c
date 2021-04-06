@@ -1055,10 +1055,14 @@ static void elanspi_fp_frame_stitch_and_submit(FpiDeviceElanSpi *self) {
 	GSList *frame_start = g_slist_nth(self->fp_frame_list, ELANSPI_SWIPE_FRAMES_DISCARD);
 	fpi_do_movement_estimation(&self->assembling_ctx, frame_start);
 	FpImage *img = fpi_assemble_frames(&self->assembling_ctx, frame_start);
-	img->flags |= FPI_IMAGE_PARTIAL | FPI_IMAGE_COLORS_INVERTED;
+	FpImage *scaled = fpi_image_resize(img, 2, 2);
+
+	g_object_unref(img);
+
+	scaled->flags |= FPI_IMAGE_PARTIAL | FPI_IMAGE_COLORS_INVERTED;
 
 	// submit image
-	fpi_image_device_image_captured(FP_IMAGE_DEVICE(self), img);
+	fpi_image_device_image_captured(FP_IMAGE_DEVICE(self), scaled);
 
 	// clean out frame data
 	g_slist_free_full(self->fp_frame_list, g_free);
