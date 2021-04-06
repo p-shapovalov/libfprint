@@ -956,6 +956,14 @@ static gint elanspi_correct_with_bg(FpiDeviceElanSpi *self, guint16 *raw_image) 
 	return count;
 }
 
+static guint16 elanspi_lookup_pixel_with_rotation(FpiDeviceElanSpi *self, const guint16 *data_in, int y, int x) {
+	int rotation = fpi_device_get_driver_data(FP_DEVICE(self)) & 3;
+	if (rotation == ELANSPI_180_ROTATE) {
+		y = (self->sensor_height - y - 1);
+	}
+	return data_in[y * self->sensor_width + x];
+}
+
 static enum elanspi_guess_result elanspi_guess_image(FpiDeviceElanSpi *self, guint16 *raw_image) {
 	g_autofree guint16 * image_copy = g_malloc0(self->sensor_height * self->sensor_width * 2);
 	memcpy(image_copy, raw_image, self->sensor_height * self->sensor_width * 2);
@@ -963,15 +971,25 @@ static enum elanspi_guess_result elanspi_guess_image(FpiDeviceElanSpi *self, gui
 	gint invalid_percent = (100 * elanspi_correct_with_bg(self, image_copy)) / (self->sensor_height * self->sensor_width);
 	gint is_fp = 0, is_empty = 0;
 
-	gint64 mean = elanspi_mean_image(self, image_copy);
+	gint64 mean = 0;
 	gint64 sq_stddev = 0;
 
-	for (int i = 0; i < self->sensor_height*self->sensor_width; ++i) {
-		gint64 j = (gint64)image_copy[i] - mean;
-		sq_stddev += j*j;
+	for (int j = 0; j < (self->sensor_height > ELANSPI_MAX_FRAME_HEIGHT ? ELANSPI_MAX_FRAME_HEIGHT : self->sensor_height); ++j) {
+		for (int i = 0; i < self->sensor_width; ++i) {
+			mean += (gint64)elanspi_lookup_pixel_with_rotation(self, image_copy, j, i);
+		}
 	}
 
-	sq_stddev /= (self->sensor_height * self->sensor_width);
+	mean /= ((self->sensor_height > ELANSPI_MAX_FRAME_HEIGHT ? ELANSPI_MAX_FRAME_HEIGHT : self->sensor_height) * self->sensor_width);
+
+	for (int j = 0; j < (self->sensor_height > ELANSPI_MAX_FRAME_HEIGHT ? ELANSPI_MAX_FRAME_HEIGHT : self->sensor_height); ++j) {
+		for (int i = 0; i < self->sensor_width; ++i) {
+			gint64 k = (gint64)elanspi_lookup_pixel_with_rotation(self, image_copy, j, i) - mean;
+			sq_stddev += k*k;
+		}
+	}
+
+	sq_stddev /= ((self->sensor_height > ELANSPI_MAX_FRAME_HEIGHT ? ELANSPI_MAX_FRAME_HEIGHT : self->sensor_height) * self->sensor_width);
 
 	fp_dbg("<guess> stddev=%ld, ip=%d, is_fp=%d, is_empty=%d", sq_stddev, invalid_percent, is_fp, is_empty);
 
@@ -998,14 +1016,6 @@ static gboolean elanspi_waitupdown_process(FpiDeviceElanSpi *self, enum elanspi_
 		self->finger_wait_debounce = 0;
 		return FALSE;
 	}
-}
-
-static guint16 elanspi_lookup_pixel_with_rotation(FpiDeviceElanSpi *self, const guint16 *data_in, int y, int x) {
-	int rotation = fpi_device_get_driver_data(FP_DEVICE(self)) & 3;
-	if (rotation == ELANSPI_180_ROTATE) {
-		y = (self->sensor_height - y - 1);
-	}
-	return data_in[y * self->sensor_width + x];
 }
 
 static int cmp_u16(const void *a, const void *b) {
