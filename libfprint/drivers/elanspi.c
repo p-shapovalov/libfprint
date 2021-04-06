@@ -77,6 +77,8 @@ struct _FpiDeviceElanSpi {
 	/* wait ctx */
 	gint finger_wait_debounce;
 
+	gboolean deactivating, capturing;
+
 	/* active SPI status info */
 	int spi_fd;
 };
@@ -1030,7 +1032,33 @@ static void elanspi_process_frame(FpiDeviceElanSpi *self, const guint16 *data_in
 	}
 }
 
+static unsigned char elanspi_fp_assembling_get_pixel(struct fpi_frame_asmbl_ctx *ctx, struct fpi_frame *frame, unsigned int x, unsigned int y) {
+	return frame->data[y * ctx->frame_width + x];
+}
+
 static void elanspi_fp_frame_stitch_and_submit(FpiDeviceElanSpi *self) {
+	// create assembling context
+	
+	self->assembling_ctx.image_width = (self->sensor_width * 3) / 2;
+
+	// todo: make this deal with 90/270deg rotations
+	self->assembling_ctx.frame_width = self->sensor_width;
+	self->assembling_ctx.frame_height = self->sensor_height > ELANSPI_MAX_FRAME_HEIGHT ? ELANSPI_MAX_FRAME_HEIGHT : self->sensor_height;
+
+	self->assembling_ctx.get_pixel = elanspi_fp_assembling_get_pixel;
+
+	// stitch image
+	GSList *frame_start = g_slist_nth(self->fp_frame_list, ELANSPI_SWIPE_FRAMES_DISCARD);
+	fpi_do_movement_estimation(&self->assembling_ctx, frame_start);
+	FpImage *img = fpi_assemble_frames(&self->assembling_ctx, frame_start);
+	img->flags |= FPI_IMAGE_PARTIAL | FPI_IMAGE_COLORS_INVERTED;
+
+	// submit image
+	fpi_image_device_image_captured(FP_IMAGE_DEVICE(self), img);
+
+	// clean out frame data
+	g_slist_free_full(self->fp_frame_list, g_free);
+	self->fp_frame_list = NULL;
 }
 
 static void elanspi_fp_frame_handler(FpiSsm *ssm, FpiDeviceElanSpi *self) {
@@ -1106,6 +1134,16 @@ static void elanspi_fp_capture_ssm_handler(FpiSsm *ssm, FpDevice *dev) {
 		case ELANSPI_FPCAPT_WAITDOWN_CAPTURE:
 		case ELANSPI_FPCAPT_WAITUP_CAPTURE:
 		case ELANSPI_FPCAPT_FP_CAPTURE:
+			// check if we are deactivating
+			if (self->deactivating) {
+				fp_dbg("<capture> got deactivate; exiting");
+				fpi_ssm_mark_completed(ssm);
+				
+				// mark deactivate done
+				fpi_image_device_deactivate_complete(FP_IMAGE_DEVICE(dev), NULL);
+
+				return;
+			}
 			// if sensor is hv
 			if (self->sensor_id == 0xe) {
 				chld = fpi_ssm_new(dev, elanspi_capture_hv_handler, ELANSPI_CAPTHV_NSTATES);
@@ -1130,6 +1168,9 @@ static void elanspi_fp_capture_ssm_handler(FpiSsm *ssm, FpDevice *dev) {
 			self->fp_frame_list = NULL;
 			self->fp_empty_counter = 0;
 
+			// report finger status
+			fpi_image_device_report_finger_status(FP_IMAGE_DEVICE(self), TRUE);
+
 			// jump
 			fpi_ssm_jump_to_state(ssm, ELANSPI_FPCAPT_FP_CAPTURE);
 			return;
@@ -1143,6 +1184,8 @@ static void elanspi_fp_capture_ssm_handler(FpiSsm *ssm, FpDevice *dev) {
 				// take another image
 				fpi_ssm_jump_to_state(ssm, ELANSPI_FPCAPT_WAITUP_CAPTURE);
 			}
+
+			fpi_image_device_report_finger_status(FP_IMAGE_DEVICE(self), FALSE);
 
 			// finish
 			fpi_ssm_mark_completed(ssm);
@@ -1191,9 +1234,54 @@ static void elanspi_activate(FpImageDevice *dev) {
 }
 
 static void elanspi_deactivate(FpImageDevice *dev) {
+   FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI (dev);
+
+	if (self->capturing) {
+		self->deactivating = TRUE;
+		fp_dbg("<deactivate> waiting capture to stop");
+	}
+	else {
+		fpi_image_device_deactivate_complete(dev, NULL);
+	}
+}
+
+static void elanspi_fp_capture_finish(FpiSsm *ssm, FpDevice *dev, GError *error) {
+   FpImageDevice *idev = FP_IMAGE_DEVICE (dev);
+   FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI (dev);
+
+   self->capturing = FALSE;
+
+   if (self->deactivating) {
+	   // finish deactivate
+	   if (error) {
+		   g_error_free(error);
+	   }
+	   self->deactivating = FALSE;
+	   fpi_image_device_deactivate_complete(idev, NULL);
+	   return;
+   }
 }
 
 static void elanspi_change_state(FpImageDevice *dev, FpiImageDeviceState state) {
+   FpiDeviceElanSpi *self = FPI_DEVICE_ELANSPI (dev);
+
+	if (state == FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON) {
+		if (self->capturing) {
+			fp_warn("<change_state> multiple captures");
+			return;
+		}
+
+		// start capturer
+		fpi_ssm_start(
+			fpi_ssm_new(FP_DEVICE(dev), elanspi_fp_capture_ssm_handler, ELANSPI_FPCAPT_NSTATES),
+			elanspi_fp_capture_finish
+		);
+
+		fp_dbg("<change_state> started capturer");
+	}
+	else {
+		// todo: other states?
+	}
 }
 
 static void fpi_device_elanspi_init(FpiDeviceElanSpi *self) {
