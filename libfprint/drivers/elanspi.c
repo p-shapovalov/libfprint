@@ -1023,8 +1023,13 @@ static int cmp_u16(const void *a, const void *b) {
 }
 
 static void elanspi_process_frame(FpiDeviceElanSpi *self, const guint16 *data_in, guint8 *data_out) {
-	size_t frame_size = self->sensor_width * self->sensor_height;
+	size_t frame_size = self->sensor_width * (self->sensor_height > ELANSPI_MAX_FRAME_HEIGHT ? ELANSPI_MAX_FRAME_HEIGHT : self->sensor_height);
 	guint16 data_in_sorted[frame_size];
+	for (int i = 0, ptr = 0; i < (self->sensor_height > ELANSPI_MAX_FRAME_HEIGHT ? ELANSPI_MAX_FRAME_HEIGHT : self->sensor_height); ++i) {
+		for (int j = 0; j < self->sensor_width; ++j) {
+			data_in_sorted[ptr++] = elanspi_lookup_pixel_with_rotation(self, data_in, i, j);
+		}
+	}
 	memcpy(data_in_sorted, data_in, frame_size*2);
 	qsort(data_in_sorted, frame_size, 2, cmp_u16);
 	guint16 lvl0 = data_in_sorted[0];
@@ -1035,12 +1040,20 @@ static void elanspi_process_frame(FpiDeviceElanSpi *self, const guint16 *data_in
 	for (int i = 0; i < self->sensor_height; ++i) {
 		for (int j = 0; j < self->sensor_width; ++j) {
 			guint16 px = elanspi_lookup_pixel_with_rotation(self, data_in, i, j);
-			if (lvl0 <= px && px < lvl1)
-				px = (px - lvl0) * 99 / (lvl1 - lvl0);
-			else if (lvl1 <= px && px < lvl2)
-				px = 99 + ((px - lvl1) * 56 / (lvl2 - lvl1));
-			else                      // (lvl2 <= px && px <= lvl3)
-				px = 155 + ((px - lvl2) * 100 / (lvl3 - lvl2));
+			if (px < lvl0) {
+				px = 0;
+			}
+			else if (px > lvl3) {
+				px = 255;
+			}
+			else {
+				if (lvl0 <= px && px < lvl1)
+					px = (px - lvl0) * 99 / (lvl1 - lvl0);
+				else if (lvl1 <= px && px < lvl2)
+					px = 99 + ((px - lvl1) * 56 / (lvl2 - lvl1));
+				else                      // (lvl2 <= px && px <= lvl3)
+					px = 155 + ((px - lvl2) * 100 / (lvl3 - lvl2));
+			}
 			*data_out++ = px;
 		}
 	}
