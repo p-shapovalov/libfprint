@@ -971,6 +971,10 @@ static enum elanspi_guess_result elanspi_guess_image(FpiDeviceElanSpi *self, gui
 		sq_stddev += j*j;
 	}
 
+	sq_stddev /= (self->sensor_height * self->sensor_width);
+
+	fp_dbg("<guess> stddev=%ld, ip=%d, is_fp=%d, is_empty=%d", sq_stddev, invalid_percent, is_fp, is_empty);
+
 	if (invalid_percent < ELANSPI_MAX_REAL_INVALID_PERCENT) ++is_fp;
 	if (invalid_percent > ELANSPI_MIN_EMPTY_INVALID_PERCENT) ++is_empty;
 
@@ -1078,6 +1082,8 @@ static void elanspi_fp_frame_handler(FpiSsm *ssm, FpiDeviceElanSpi *self) {
 finish_capture:
 					elanspi_fp_frame_stitch_and_submit(self);
 					// prepare for wait up
+					self->finger_wait_debounce = 0;
+					fpi_ssm_jump_to_state(ssm, ELANSPI_FPCAPT_WAITUP_CAPTURE);
 					return;
 				}
 			}
@@ -1158,6 +1164,7 @@ static void elanspi_fp_capture_ssm_handler(FpiSsm *ssm, FpDevice *dev) {
 			if (!elanspi_waitupdown_process(self, ELANSPI_GUESS_FP)) {
 				// take another image
 				fpi_ssm_jump_to_state(ssm, ELANSPI_FPCAPT_WAITDOWN_CAPTURE);
+				return;
 			}
 
 			// prepare to take actual image
@@ -1183,6 +1190,7 @@ static void elanspi_fp_capture_ssm_handler(FpiSsm *ssm, FpDevice *dev) {
 			if (!elanspi_waitupdown_process(self, ELANSPI_GUESS_EMPTY)) {
 				// take another image
 				fpi_ssm_jump_to_state(ssm, ELANSPI_FPCAPT_WAITUP_CAPTURE);
+				return;
 			}
 
 			fpi_image_device_report_finger_status(FP_IMAGE_DEVICE(self), FALSE);
