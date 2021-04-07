@@ -1140,7 +1140,8 @@ finish_capture:
 			elanspi_process_frame(self, self->last_image, this_frame->data);
 
 			if (self->fp_frame_list) {
-				gint difference = fpi_mean_sq_diff_norm(self->fp_frame_list->data, this_frame->data, self->sensor_height * self->sensor_width);
+				gint difference = fpi_mean_sq_diff_norm(self->fp_frame_list->data, this_frame->data, (self->sensor_height > ELANSPI_MAX_FRAME_HEIGHT ? ELANSPI_MAX_FRAME_HEIGHT : self->sensor_height) * self->sensor_width);
+				fp_dbg("<fp_frame> diff = %d", difference);
 				if (difference < ELANSPI_MIN_FRAME_TO_FRAME_DIFF) {
 					fp_dbg("<fp_frame> ignoring b.c. difference is too small");
 					g_free(this_frame);
