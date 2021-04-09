@@ -1223,7 +1223,7 @@ cmp_u16 (const void *a, const void *b)
 static void
 elanspi_process_frame (FpiDeviceElanSpi *self, const guint16 *data_in, guint8 *data_out)
 {
-  size_t frame_size = self->sensor_width * (self->sensor_height > ELANSPI_MAX_FRAME_HEIGHT ? ELANSPI_MAX_FRAME_HEIGHT : self->sensor_height);
+  size_t frame_size = self->frame_width * self->frame_height;
   guint16 data_in_sorted[frame_size];
 
   for (int i = 0, ptr = 0; i < self->frame_height; ++i)
@@ -1237,9 +1237,9 @@ elanspi_process_frame (FpiDeviceElanSpi *self, const guint16 *data_in, guint8 *d
   guint16 lvl2 = data_in_sorted[frame_size * 65 / 100];
   guint16 lvl3 = data_in_sorted[frame_size - 1];
 
-  for (int i = 0; i < self->sensor_height; ++i)
+  for (int i = 0; i < self->frame_height; ++i)
     {
-      for (int j = 0; j < self->sensor_width; ++j)
+      for (int j = 0; j < self->frame_width; ++j)
         {
           guint16 px = elanspi_lookup_pixel_with_rotation (self, data_in, i, j);
           if (px < lvl0)
@@ -1275,7 +1275,7 @@ elanspi_fp_frame_stitch_and_submit (FpiDeviceElanSpi *self)
 {
   /* create assembling context */
 
-  self->assembling_ctx.image_width = (self->sensor_width * 3) / 2;
+  self->assembling_ctx.image_width = (self->frame_width * 3) / 2;
 
   self->assembling_ctx.frame_width = self->frame_width;
   self->assembling_ctx.frame_height = self->frame_height;
