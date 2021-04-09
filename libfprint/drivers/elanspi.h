@@ -342,3 +342,5 @@ static const FpIdEntry elanspi_id_table[] = {
 #define ELANSPI_MIN_FRAME_TO_FRAME_DIFF 3500
 
 #define ELANSPI_HV_SENSOR_FRAME_DELAY 25
+
+#define ELANSPI_OTP_TIMEOUT_USEC 12 * 1000

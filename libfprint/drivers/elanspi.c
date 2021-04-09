@@ -54,6 +54,7 @@ struct _FpiDeviceElanSpi
     {
       guint8 dac_value;
       guint8 line_ptr;
+      guint8 otp_timeout;
     } old_data;
     struct
     {
@@ -965,6 +966,7 @@ do_sw_reset:
           return;
         }
       /* otherwise, begin otp */
+      self->old_data.otp_timeout = g_get_monotonic_time () + ELANSPI_OTP_TIMEOUT_USEC;
       xfer = fpi_spi_transfer_new (dev, self->spi_fd);
       xfer->ssm = ssm;
       elanspi_read_register (self, 0x3d, &self->sensor_reg_vref1, xfer);
@@ -1022,13 +1024,21 @@ do_sw_reset:
       /* if low two bits are not set, loop */
       if ((self->sensor_reg_27 & 6) != 6)
         {
+          /* have we hit the timeout */
+          if (g_get_monotonic_time () > self->old_data.otp_timeout)
+            {
+              fp_warn ("<init/otp> timed out waiting for vcom detection");
+              self->sensor_vcm_mode = 2;
+              fpi_ssm_jump_to_state (ssm, ELANSPI_INIT_OTP_WRITE_0xb);
+              return;
+            }
           /* try again */
           fp_dbg ("<init/otp> looping");
           fpi_ssm_jump_to_state (ssm, ELANSPI_INIT_OTP_LOOP_READ_0x28);
           return;
         }
       /* otherwise, set vcm mode from low bit and read dac2 */
-      self->sensor_vcm_mode = self->sensor_reg_27 & 1;
+      self->sensor_vcm_mode = (self->sensor_reg_27 & 1) + 1;
       xfer = fpi_spi_transfer_new (dev, self->spi_fd);
       xfer->ssm = ssm;
       elanspi_read_register (self, 0x7, &self->sensor_reg_dac2, xfer);
