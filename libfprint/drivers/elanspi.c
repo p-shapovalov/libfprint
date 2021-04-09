@@ -1301,6 +1301,28 @@ elanspi_fp_frame_stitch_and_submit (FpiDeviceElanSpi *self)
   self->fp_frame_list = NULL;
 }
 
+static gint64
+elanspi_get_frame_diff_stddev_sq (FpiDeviceElanSpi *self, guint8 *frame1, guint8 *frame2)
+{
+  gint64 mean = 0;
+  gint64 sq_stddev = 0;
+
+  for (int j = 0; j < (self->frame_width * self->frame_height); ++j)
+    mean += abs ((int) frame1[j] - (int) frame2[j]);
+
+  mean /= (self->frame_width * self->frame_height);
+
+  for (int j = 0; j < (self->frame_width * self->frame_height); ++j)
+    {
+      gint64 k = (gint64) ((int) frame1[j] - (int) frame2[j]) - mean;
+      sq_stddev += k * k;
+    }
+
+  sq_stddev /= (self->frame_width * self->frame_height);
+
+  return sq_stddev;
+}
+
 static void
 elanspi_fp_frame_handler (FpiSsm *ssm, FpiDeviceElanSpi *self)
 {
@@ -1366,7 +1388,7 @@ finish_capture:
 
       if (self->fp_frame_list)
         {
-          gint difference = fpi_mean_sq_diff_norm (self->fp_frame_list->data, this_frame->data, self->frame_height * self->frame_width);
+          gint difference = elanspi_get_frame_diff_stddev_sq (self, self->fp_frame_list->data, this_frame->data);
           fp_dbg ("<fp_frame> diff = %d", difference);
           if (difference < ELANSPI_MIN_FRAME_TO_FRAME_DIFF)
             {
