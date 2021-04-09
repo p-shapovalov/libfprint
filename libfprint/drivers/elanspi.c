@@ -71,6 +71,7 @@ struct _FpiDeviceElanSpi
   /* background / calibration parameters */
   guint16 *bg_image;
   guint16 *last_image;
+  guint16 *prev_frame_image;
 
   /* assembling ctx */
   struct fpi_frame_asmbl_ctx assembling_ctx;
@@ -952,8 +953,10 @@ do_sw_reset:
       /* allocate memory */
       g_clear_pointer (&self->bg_image, g_free);
       g_clear_pointer (&self->last_image, g_free);
+      g_clear_pointer (&self->prev_frame_image, g_free);
       self->last_image = g_malloc0 (self->sensor_width * self->sensor_height * 2);
       self->bg_image = g_malloc0 (self->sensor_width * self->sensor_height * 2);
+      self->prev_frame_image = g_malloc0 (self->sensor_width * self->sensor_height * 2);
       /* reset again */
       goto do_sw_reset;
 
@@ -1302,23 +1305,23 @@ elanspi_fp_frame_stitch_and_submit (FpiDeviceElanSpi *self)
 }
 
 static gint64
-elanspi_get_frame_diff_stddev_sq (FpiDeviceElanSpi *self, guint8 *frame1, guint8 *frame2)
+elanspi_get_frame_diff_stddev_sq (FpiDeviceElanSpi *self, guint16 *frame1, guint16 *frame2)
 {
   gint64 mean = 0;
   gint64 sq_stddev = 0;
 
-  for (int j = 0; j < (self->frame_width * self->frame_height); ++j)
+  for (int j = 0; j < (self->sensor_height * self->sensor_width); ++j)
     mean += abs ((int) frame1[j] - (int) frame2[j]);
 
-  mean /= (self->frame_width * self->frame_height);
+  mean /= (self->sensor_height * self->sensor_width);
 
-  for (int j = 0; j < (self->frame_width * self->frame_height); ++j)
+  for (int j = 0; j < (self->sensor_height * self->sensor_width); ++j)
     {
-      gint64 k = (gint64) ((int) frame1[j] - (int) frame2[j]) - mean;
+      gint64 k = abs ((int) frame1[j] - (int) frame2[j]) - mean;
       sq_stddev += k * k;
     }
 
-  sq_stddev /= (self->frame_width * self->frame_height);
+  sq_stddev /= (self->sensor_height * self->sensor_width);
 
   return sq_stddev;
 }
@@ -1388,7 +1391,7 @@ finish_capture:
 
       if (self->fp_frame_list)
         {
-          gint difference = elanspi_get_frame_diff_stddev_sq (self, self->fp_frame_list->data, this_frame->data);
+          gint difference = elanspi_get_frame_diff_stddev_sq (self, self->last_image, self->prev_frame_image);
           fp_dbg ("<fp_frame> diff = %d", difference);
           if (difference < ELANSPI_MIN_FRAME_TO_FRAME_DIFF)
             {
@@ -1398,6 +1401,7 @@ finish_capture:
             }
         }
       self->fp_frame_list = g_slist_prepend (self->fp_frame_list, this_frame);
+      memcpy (self->prev_frame_image, self->last_image, self->sensor_height * self->sensor_width * 2);
       break;
     }
 
@@ -1618,6 +1622,7 @@ fpi_device_elanspi_finalize (GObject *this)
 
   g_clear_pointer (&self->bg_image, g_free);
   g_clear_pointer (&self->last_image, g_free);
+  g_clear_pointer (&self->prev_frame_image, g_free);
   if (self->fp_frame_list)
     {
       g_slist_free_full (self->fp_frame_list, g_free);
