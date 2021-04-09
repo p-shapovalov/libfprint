@@ -1315,26 +1315,31 @@ elanspi_fp_frame_handler (FpiSsm *ssm, FpiDeviceElanSpi *self)
     case ELANSPI_GUESS_EMPTY:
       ++self->fp_empty_counter;
       fp_dbg ("<fp_frame> got empty");
-      if (g_slist_length (self->fp_frame_list) >= ELANSPI_MIN_FRAMES_SWIPE)
+      if (self->fp_empty_counter > 1)
         {
-          fp_dbg ("<fp_frame> have enough frames");
-          if (self->fp_empty_counter > 1)
+          fp_dbg ("<fp_frame> have enough debounce");
+          if (g_slist_length (self->fp_frame_list) >= ELANSPI_MIN_FRAMES_SWIPE)
             {
-              fp_dbg ("<fp_frame> got empty debounce, finished framelist");
+              fp_dbg ("<fp_frame> have enough frames, submitting");
 finish_capture:
               elanspi_fp_frame_stitch_and_submit (self);
-              /* prepare for wait up */
-              self->finger_wait_debounce = 0;
-              fpi_ssm_jump_to_state (ssm, ELANSPI_FPCAPT_WAITUP_CAPTURE);
-              return;
             }
+          else
+            {
+              fp_dbg ("<fp_frame> not enough frames, reporting short swipe");
+              fpi_image_device_retry_scan (FP_IMAGE_DEVICE (self), FP_DEVICE_RETRY_TOO_SHORT);
+            }
+          /* prepare for wait up */
+          self->finger_wait_debounce = 0;
+          fpi_ssm_jump_to_state (ssm, ELANSPI_FPCAPT_WAITUP_CAPTURE);
+          return;
         }
       break;
 
     case ELANSPI_GUESS_FP:
       if (self->fp_empty_counter && self->fp_frame_list)
         {
-          if (self->fp_empty_counter <= ELANSPI_MIN_FRAMES_SWIPE / 4)
+          if (self->fp_empty_counter < 1)
             {
               fp_dbg ("<fp_frame> possible bounced fp");
               break;
@@ -1543,6 +1548,10 @@ elanspi_fp_capture_finish (FpiSsm *ssm, FpDevice *dev, GError *error)
       fpi_image_device_deactivate_complete (idev, NULL);
       return;
     }
+
+  /* if there was an error, report it */
+  if (error)
+    fpi_image_device_session_error (idev, error);
 }
 
 static void
