@@ -1117,10 +1117,23 @@ static guint16
 elanspi_lookup_pixel_with_rotation (FpiDeviceElanSpi *self, const guint16 *data_in, int y, int x)
 {
   int rotation = fpi_device_get_driver_data (FP_DEVICE (self)) & 3;
+  gint x1 = x, y1 = y;
 
   if (rotation == ELANSPI_180_ROTATE)
-    y = (self->sensor_height - y - 1);
-  return data_in[y * self->sensor_width + x];
+    {
+      y1 = (self->sensor_height - y - 1);
+    }
+  else if (rotation == ELANSPI_90LEFT_ROTATE)
+    {
+      x1 = y;
+      y1 = (self->sensor_width - x - 1);
+    }
+  else if (rotation == ELANSPI_90RIGHT_ROTATE)
+    {
+      x1 = (self->sensor_height - y - 1);
+      y1 = x;
+    }
+  return data_in[y1 * self->sensor_width + x1];
 }
 
 static enum elanspi_guess_result
@@ -1351,7 +1364,10 @@ finish_capture:
       break;
     }
 
-  fpi_ssm_jump_to_state (ssm, ELANSPI_FPCAPT_FP_CAPTURE);
+  if (self->sensor_id == 0xe)
+    fpi_ssm_jump_to_state_delayed (ssm, ELANSPI_FPCAPT_FP_CAPTURE, ELANSPI_HV_SENSOR_FRAME_DELAY, fpi_device_get_cancellable (FP_DEVICE (self)));
+  else
+    fpi_ssm_jump_to_state (ssm, ELANSPI_FPCAPT_FP_CAPTURE);
 }
 
 static void
