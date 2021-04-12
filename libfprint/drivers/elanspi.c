@@ -1166,7 +1166,8 @@ elanspi_guess_image (FpiDeviceElanSpi *self, guint16 *raw_image)
     for (int i = 0; i < self->frame_width; ++i)
       mean += (gint64) elanspi_lookup_pixel_with_rotation (self, image_copy, j, i);
 
-  mean /= (self->frame_width * self->frame_height);
+  if (self->frame_width && self->frame_height) /* necessary to make clang happy about div0 */
+    mean /= (self->frame_width * self->frame_height);
 
   for (int j = 0; j < self->frame_height; ++j)
     for (int i = 0; i < self->frame_width; ++i)
@@ -1175,7 +1176,8 @@ elanspi_guess_image (FpiDeviceElanSpi *self, guint16 *raw_image)
         sq_stddev += k * k;
       }
 
-  sq_stddev /= (self->frame_width * self->frame_height);
+  if (self->frame_width && self->frame_height) /* necessary to make clang happy about div0 */
+    sq_stddev /= (self->frame_width * self->frame_height);
 
   fp_dbg ("<guess> stddev=%ld, ip=%d, is_fp=%d, is_empty=%d", sq_stddev, invalid_percent, is_fp, is_empty);
 
@@ -1239,6 +1241,15 @@ elanspi_process_frame (FpiDeviceElanSpi *self, const guint16 *data_in, guint8 *d
   guint16 lvl1 = data_in_sorted[frame_size * 3 / 10];
   guint16 lvl2 = data_in_sorted[frame_size * 65 / 100];
   guint16 lvl3 = data_in_sorted[frame_size - 1];
+
+  if (lvl1 == lvl0)
+    ++lvl1;
+
+  if (lvl2 == lvl1)
+    ++lvl2;
+
+  if (lvl3 == lvl2)
+    ++lvl3;
 
   for (int i = 0; i < self->frame_height; ++i)
     {
