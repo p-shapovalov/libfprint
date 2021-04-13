@@ -1364,6 +1364,9 @@ finish_capture:
             {
               fp_dbg ("<fp_frame> not enough frames, reporting short swipe");
               fpi_image_device_retry_scan (FP_IMAGE_DEVICE (self), FP_DEVICE_RETRY_TOO_SHORT);
+              /* kill off the state machine immediately */
+              fpi_ssm_mark_completed (ssm);
+              return;
             }
           /* prepare for wait up */
           self->finger_wait_debounce = 0;
