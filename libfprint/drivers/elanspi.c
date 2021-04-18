@@ -432,10 +432,21 @@ elanspi_capture_old_line_handler (FpiSpiTransfer *transfer, FpDevice *dev, gpoin
   self->old_data.line_ptr++;
   /* if there is still data, continue from check lineready */
   if (self->old_data.line_ptr < self->sensor_height)
-    fpi_ssm_jump_to_state (transfer->ssm, ELANSPI_CAPTOLD_CHECK_LINEREADY);
+    {
+      fpi_ssm_jump_to_state (transfer->ssm, ELANSPI_CAPTOLD_CHECK_LINEREADY);
+    }
   else
-    /* otherwise finish succesfully */
-    fpi_ssm_mark_completed (transfer->ssm);
+    {
+      /* check for cancellation */
+      if (fpi_device_action_is_cancelled (dev))
+        {
+          g_cancellable_set_error_if_cancelled (fpi_device_get_cancellable (dev), &error);
+          fpi_ssm_mark_failed (transfer->ssm, error);
+          return;
+        }
+      /* otherwise finish succesfully */
+      fpi_ssm_mark_completed (transfer->ssm);
+    }
 }
 
 static void
@@ -457,7 +468,7 @@ elanspi_capture_old_handler (FpiSsm *ssm, FpDevice *dev)
     case ELANSPI_CAPTOLD_CHECK_LINEREADY:
       xfer = elanspi_read_status (self, &self->sensor_status);
       xfer->ssm = ssm;
-      fpi_spi_transfer_submit (xfer, fpi_device_get_cancellable (dev), fpi_ssm_spi_transfer_cb, NULL);
+      fpi_spi_transfer_submit (xfer, NULL, fpi_ssm_spi_transfer_cb, NULL);
       return;
 
     case ELANSPI_CAPTOLD_RECV_LINE:
@@ -474,7 +485,7 @@ elanspi_capture_old_handler (FpiSsm *ssm, FpDevice *dev)
       fpi_spi_transfer_write (xfer, 2);
       xfer->buffer_wr[0] = 0x10;                   /* receieve line */
       fpi_spi_transfer_read (xfer, self->sensor_width * 2);
-      fpi_spi_transfer_submit (xfer, fpi_device_get_cancellable (dev), elanspi_capture_old_line_handler, NULL);
+      fpi_spi_transfer_submit (xfer, NULL, elanspi_capture_old_line_handler, NULL);
       return;
     }
 }
