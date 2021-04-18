@@ -1086,7 +1086,7 @@ do_sw_reset:
 }
 
 enum elanspi_guess_result {
-  ELANSPI_GUESS_FP,
+  ELANSPI_GUESS_FINGERPRINT,
   ELANSPI_GUESS_EMPTY,
   ELANSPI_GUESS_UNKNOWN
 };
@@ -1179,7 +1179,7 @@ elanspi_guess_image (FpiDeviceElanSpi *self, guint16 *raw_image)
     ++is_empty;
 
   if (is_fp > is_empty)
-    return ELANSPI_GUESS_FP;
+    return ELANSPI_GUESS_FINGERPRINT;
   else if (is_empty > is_fp)
     return ELANSPI_GUESS_EMPTY;
   else
@@ -1362,7 +1362,7 @@ finish_capture:
         }
       break;
 
-    case ELANSPI_GUESS_FP:
+    case ELANSPI_GUESS_FINGERPRINT:
       if (self->fp_empty_counter && self->fp_frame_list)
         {
           if (self->fp_empty_counter < 1)
@@ -1449,7 +1449,7 @@ elanspi_fp_capture_ssm_handler (FpiSsm *ssm, FpDevice *dev)
       return;
 
     case ELANSPI_FPCAPT_WAITDOWN_PROCESS:
-      if (!elanspi_waitupdown_process (self, ELANSPI_GUESS_FP))
+      if (!elanspi_waitupdown_process (self, ELANSPI_GUESS_FINGERPRINT))
         {
           /* take another image */
           fpi_ssm_jump_to_state (ssm, ELANSPI_FPCAPT_WAITDOWN_CAPTURE);
