@@ -54,7 +54,7 @@ struct _FpiDeviceElanSpi
     {
       guint8 dac_value;
       guint8 line_ptr;
-      guint8 otp_timeout;
+      gint64 otp_timeout;
     } old_data;
     struct
     {
