@@ -511,6 +511,12 @@ verify_msg_cb (FpiDeviceSynaptics *self,
   FpDevice *device = FP_DEVICE (self);
   bmkt_verify_resp_t *verify_resp;
 
+  if (self->action_starting)
+    {
+      fpi_device_critical_leave (device);
+      self->action_starting = FALSE;
+    }
+
   if (error)
     {
       fpi_device_verify_complete (device, error);
@@ -603,6 +609,8 @@ verify (FpDevice *device)
 
   G_DEBUG_HERE ();
 
+  self->action_starting = TRUE;
+  fpi_device_critical_enter (device);
   synaptics_sensor_cmd (self, 0, BMKT_CMD_VERIFY_USER, user_id, user_id_len, verify_msg_cb);
 }
 
@@ -629,6 +637,12 @@ identify_msg_cb (FpiDeviceSynaptics *self,
                  GError             *error)
 {
   FpDevice *device = FP_DEVICE (self);
+
+  if (self->action_starting)
+    {
+      fpi_device_critical_leave (device);
+      self->action_starting = FALSE;
+    }
 
   if (error)
     {
@@ -718,6 +732,11 @@ identify_msg_cb (FpiDeviceSynaptics *self,
 static void
 identify (FpDevice *device)
 {
+  FpiDeviceSynaptics *self = FPI_DEVICE_SYNAPTICS (device);
+
+  self->action_starting = TRUE;
+  fpi_device_critical_enter (device);
+
   init_identify_msg (device);
   compose_and_send_identify_msg (device);
 }
@@ -819,6 +838,12 @@ enroll_msg_cb (FpiDeviceSynaptics *self,
 {
   FpDevice *device = FP_DEVICE (self);
   bmkt_enroll_resp_t *enroll_resp;
+
+  if (self->action_starting)
+    {
+      fpi_device_critical_leave (device);
+      self->action_starting = FALSE;
+    }
 
   if (error)
     {
@@ -966,6 +991,9 @@ enroll (FpDevice *device)
   payload[1] = finger;
   memcpy (payload + 2, user_id, user_id_len);
 
+  self->action_starting = TRUE;
+  fpi_device_critical_enter (device);
+
   synaptics_sensor_cmd (self, 0, BMKT_CMD_ENROLL_USER, payload, user_id_len + 2, enroll_msg_cb);
 }
 
@@ -979,6 +1007,7 @@ delete_msg_cb (FpiDeviceSynaptics *self,
 
   if (error)
     {
+      fpi_device_critical_leave (device);
       fpi_device_delete_complete (device, error);
       return;
     }
@@ -994,6 +1023,7 @@ delete_msg_cb (FpiDeviceSynaptics *self,
 
     case BMKT_RSP_DEL_USER_FP_FAIL:
       fp_info ("Failed to delete enrolled user: %d", resp->result);
+      fpi_device_critical_leave (device);
       if (resp->result == BMKT_FP_DATABASE_NO_RECORD_EXISTS)
         fpi_device_delete_complete (device,
                                     fpi_device_error_new (FP_DEVICE_ERROR_DATA_NOT_FOUND));
@@ -1004,6 +1034,7 @@ delete_msg_cb (FpiDeviceSynaptics *self,
 
     case BMKT_RSP_DEL_USER_FP_OK:
       fp_info ("Successfully deleted enrolled user");
+      fpi_device_critical_leave (device);
       fpi_device_delete_complete (device, NULL);
       break;
     }
@@ -1038,6 +1069,7 @@ delete_print (FpDevice *device)
   payload[0] = finger;
   memcpy (payload + 1, user_id, user_id_len);
 
+  fpi_device_critical_enter (device);
   synaptics_sensor_cmd (self, 0, BMKT_CMD_DEL_USER_FP, payload, user_id_len + 1, delete_msg_cb);
 }
 
