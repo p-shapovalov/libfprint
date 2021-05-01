@@ -67,6 +67,7 @@ struct _FpiDeviceElanSpi
 
   /* generic temp info for async reading */
   guint8 sensor_status;
+  gint64 capture_timeout;
 
   /* background / calibration parameters */
   guint16 *bg_image;
@@ -456,6 +457,7 @@ elanspi_capture_old_handler (FpiSsm *ssm, FpDevice *dev)
     case ELANSPI_CAPTOLD_WRITE_CAPTURE:
       /* reset capture state */
       self->old_data.line_ptr = 0;
+      self->capture_timeout = g_get_monotonic_time () + ELANSPI_OLD_CAPTURE_TIMEOUT_USEC;
       xfer = elanspi_do_capture (self);
       xfer->ssm = ssm;
       fpi_spi_transfer_submit (xfer, NULL, fpi_ssm_spi_transfer_cb, NULL);
@@ -471,6 +473,13 @@ elanspi_capture_old_handler (FpiSsm *ssm, FpDevice *dev)
       /* is the sensor ready? */
       if (!(self->sensor_status & 4))
         {
+          /* has the timeout expired? */
+          if (g_get_monotonic_time () > self->capture_timeout)
+            {
+              /* end with a timeout */
+              fpi_ssm_mark_failed (ssm, g_error_new (G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "timed out waiting for new line"));
+              return;
+            }
           /* check again */
           fpi_ssm_jump_to_state (ssm, ELANSPI_CAPTOLD_CHECK_LINEREADY);
           return;
@@ -622,7 +631,6 @@ elanspi_calibrate_old_handler (FpiSsm *ssm, FpDevice *dev)
       return;
 
     case ELANSPI_CALIBOLD_DACFINE_WRITE_DAC1:
-      /* todo add a timeout to this code */
       mean_value = elanspi_mean_image (self, self->last_image);
       if (mean_value >= ELANSPI_MIN_OLD_STAGE2_CALBIRATION_MEAN && mean_value <= ELANSPI_MAX_OLD_STAGE2_CALBIRATION_MEAN)
         {
@@ -707,8 +715,11 @@ elanspi_capture_hv_handler (FpiSsm *ssm, FpDevice *dev)
     case ELANSPI_CAPTHV_WRITE_CAPTURE:
       /* reset capture state */
       self->old_data.line_ptr = 0;
+      self->capture_timeout = g_get_monotonic_time () + ELANSPI_HV_CAPTURE_TIMEOUT_USEC;
       xfer = elanspi_do_capture (self);
       xfer->ssm = ssm;
+      /* these are specifically cancellable because they don't leave the device at some aribtrary line offset, since
+       * these devices only send entire images */
       fpi_spi_transfer_submit (xfer, fpi_device_get_cancellable (dev), fpi_ssm_spi_transfer_cb, NULL);
       return;
 
@@ -722,6 +733,13 @@ elanspi_capture_hv_handler (FpiSsm *ssm, FpDevice *dev)
       /* is the sensor ready? */
       if (!(self->sensor_status & 4))
         {
+          /* has the timeout expired? */
+          if (g_get_monotonic_time () > self->capture_timeout)
+            {
+              /* end with a timeout */
+              fpi_ssm_mark_failed (ssm, g_error_new (G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "timed out waiting for image"));
+              return;
+            }
           /* check again */
           fpi_ssm_jump_to_state (ssm, ELANSPI_CAPTHV_CHECK_READY);
           return;
