@@ -462,7 +462,7 @@ elanspi_capture_old_handler (FpiSsm *ssm, FpDevice *dev)
       self->old_data.line_ptr = 0;
       xfer = elanspi_do_capture (self);
       xfer->ssm = ssm;
-      fpi_spi_transfer_submit (xfer, fpi_device_get_cancellable (dev), fpi_ssm_spi_transfer_cb, NULL);
+      fpi_spi_transfer_submit (xfer, NULL, fpi_ssm_spi_transfer_cb, NULL);
       return;
 
     case ELANSPI_CAPTOLD_CHECK_LINEREADY:
@@ -1199,7 +1199,7 @@ elanspi_guess_image (FpiDeviceElanSpi *self, guint16 *raw_image)
 
 /* returns TRUE when the waiting is complete */
 static gboolean
-elanspi_waitupdown_process (FpiDeviceElanSpi *self, enum elanspi_guess_result target)
+elanspi_check_waitupdown_done (FpiDeviceElanSpi *self, enum elanspi_guess_result target)
 {
   enum elanspi_guess_result guess = elanspi_guess_image (self, self->last_image);
 
@@ -1460,7 +1460,7 @@ elanspi_fp_capture_ssm_handler (FpiSsm *ssm, FpDevice *dev)
       return;
 
     case ELANSPI_FPCAPT_WAITDOWN_PROCESS:
-      if (!elanspi_waitupdown_process (self, ELANSPI_GUESS_FINGERPRINT))
+      if (!elanspi_check_waitupdown_done (self, ELANSPI_GUESS_FINGERPRINT))
         {
           /* take another image */
           fpi_ssm_jump_to_state (ssm, ELANSPI_FPCAPT_WAITDOWN_CAPTURE);
@@ -1486,7 +1486,7 @@ elanspi_fp_capture_ssm_handler (FpiSsm *ssm, FpDevice *dev)
       return;
 
     case ELANSPI_FPCAPT_WAITUP_PROCESS:
-      if (!elanspi_waitupdown_process (self, ELANSPI_GUESS_EMPTY))
+      if (!elanspi_check_waitupdown_done (self, ELANSPI_GUESS_EMPTY))
         {
           /* take another image */
           fpi_ssm_jump_to_state (ssm, ELANSPI_FPCAPT_WAITUP_CAPTURE);
