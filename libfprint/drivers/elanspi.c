@@ -149,6 +149,8 @@ enum elanspi_init_state {
   ELANSPI_INIT_OTP_WRITE_0xc,
   /* do calibration (mutexc) */
   ELANSPI_INIT_CALIBRATE,
+  ELANSPI_INIT_BG_CAPTURE,
+  ELANSPI_INIT_BG_SAVE,
   ELANSPI_INIT_NSTATES
 };
 
@@ -167,13 +169,8 @@ enum elanspi_calibrate_old_state {
   /* calibrate dac stage2 */
   ELANSPI_CALIBOLD_DACFINE_CAPTURE,
   ELANSPI_CALIBOLD_DACFINE_WRITE_DAC1,
-  /* exit ok */
+  /* exit ok (cleanup by protecting) */
   ELANSPI_CALIBOLD_PROTECT,
-  /* capture bg image */
-  ELANSPI_CALIBOLD_BG_CAPTURE,       /* jumps to end of ssm on ok */
-  ELANSPI_CALIBOLD_BG_SAVE,
-  /* jump to reset to 0 but fail too */
-  ELANSPI_CALIBOLD_EXIT_ERR,       /* currently unused */
   ELANSPI_CALIBOLD_NSTATES
 };
 
@@ -199,9 +196,8 @@ enum elanspi_calibrate_hv_state {
   ELANSPI_CALIBHV_PROCESS,
   ELANSPI_CALIBHV_WRITE_BEST_GDAC_H,
   ELANSPI_CALIBHV_WRITE_BEST_GDAC_L,
+  /* cleanup by protecting */
   ELANSPI_CALIBHV_PROTECT,
-  ELANSPI_CALIBHV_BG_CAPTURE,
-  ELANSPI_CALIBHV_BG_SAVE,
   ELANSPI_CALIBHV_NSTATES
 };
 
@@ -578,7 +574,7 @@ elanspi_calibrate_old_handler (FpiSsm *ssm, FpDevice *dev)
       return;
 
     case ELANSPI_CALIBOLD_STARTCALIBDELAY:
-      fpi_ssm_next_state_delayed (ssm, 1, fpi_device_get_cancellable (dev));
+      fpi_ssm_next_state_delayed (ssm, 1);
       return;
 
     case ELANSPI_CALIBOLD_SEND_REGTABLE:
@@ -595,7 +591,6 @@ elanspi_calibrate_old_handler (FpiSsm *ssm, FpDevice *dev)
     case ELANSPI_CALIBOLD_DACBASE_CAPTURE:
     case ELANSPI_CALIBOLD_CHECKFIN_CAPTURE:
     case ELANSPI_CALIBOLD_DACFINE_CAPTURE:
-    case ELANSPI_CALIBOLD_BG_CAPTURE:
       chld = fpi_ssm_new (dev, elanspi_capture_old_handler, ELANSPI_CAPTOLD_NSTATES);
       fpi_ssm_start_subsm (ssm, chld);
       return;
@@ -652,11 +647,6 @@ elanspi_calibrate_old_handler (FpiSsm *ssm, FpDevice *dev)
       xfer = elanspi_write_register (self, 0x00, 0x00);
       xfer->ssm = ssm;
       fpi_spi_transfer_submit (xfer, fpi_device_get_cancellable (dev), fpi_ssm_spi_transfer_cb, NULL);
-      return;
-
-    case ELANSPI_CALIBOLD_BG_SAVE:
-      memcpy (self->bg_image, self->last_image, self->sensor_height * self->sensor_width * 2);
-      fpi_ssm_mark_completed (ssm);
       return;
     }
 }
@@ -829,7 +819,6 @@ elanspi_calibrate_hv_handler (FpiSsm *ssm, FpDevice *dev)
       return;
 
     case ELANSPI_CALIBHV_CAPTURE:
-    case ELANSPI_CALIBHV_BG_CAPTURE:
       chld = fpi_ssm_new (dev, elanspi_capture_hv_handler, ELANSPI_CAPTHV_NSTATES);
       fpi_ssm_start_subsm (ssm, chld);
       return;
@@ -874,11 +863,6 @@ elanspi_calibrate_hv_handler (FpiSsm *ssm, FpDevice *dev)
       fpi_spi_transfer_submit (xfer, fpi_device_get_cancellable (dev), fpi_ssm_spi_transfer_cb, NULL);
       return;
 
-    case ELANSPI_CALIBHV_BG_SAVE:
-      memcpy (self->bg_image, self->last_image, self->sensor_height * self->sensor_width * 2);
-      fpi_ssm_mark_completed (ssm);
-      return;
-
     }
 }
 
@@ -916,7 +900,7 @@ do_sw_reset:
 
     case ELANSPI_INIT_SWRESETDELAY1:
     case ELANSPI_INIT_SWRESETDELAY2:
-      fpi_ssm_next_state_delayed (ssm, 4, fpi_device_get_cancellable (dev));
+      fpi_ssm_next_state_delayed (ssm, 4);
       return;
 
     case ELANSPI_INIT_READ_HEIGHT:
@@ -1088,10 +1072,23 @@ do_sw_reset:
       fp_dbg ("<init/calibrate> starting calibrate");
       /* if sensor is hv */
       if (self->sensor_id == 0xe)
-        chld = fpi_ssm_new (dev, elanspi_calibrate_hv_handler, ELANSPI_CALIBHV_NSTATES);
+        chld = fpi_ssm_new_full (dev, elanspi_calibrate_hv_handler, ELANSPI_CALIBHV_NSTATES, ELANSPI_CALIBHV_PROTECT, "HV calibrate");
       else
-        chld = fpi_ssm_new (dev, elanspi_calibrate_old_handler, ELANSPI_CALIBOLD_NSTATES);
+        chld = fpi_ssm_new_full (dev, elanspi_calibrate_old_handler, ELANSPI_CALIBOLD_NSTATES, ELANSPI_CALIBOLD_PROTECT, "old calibrate");
       fpi_ssm_start_subsm (ssm, chld);
+      return;
+
+    case ELANSPI_INIT_BG_CAPTURE:
+      if (self->sensor_id == 0xe)
+        chld = fpi_ssm_new (dev, elanspi_capture_hv_handler, ELANSPI_CAPTHV_NSTATES);
+      else
+        chld = fpi_ssm_new (dev, elanspi_capture_old_handler, ELANSPI_CAPTOLD_NSTATES);
+      fpi_ssm_start_subsm (ssm, chld);
+      return;
+
+    case ELANSPI_INIT_BG_SAVE:
+      memcpy (self->bg_image, self->last_image, self->sensor_height * self->sensor_width * 2);
+      fpi_ssm_mark_completed (ssm);
       return;
     }
 }
@@ -1418,7 +1415,7 @@ finish_capture:
     }
 
   if (self->sensor_id == 0xe)
-    fpi_ssm_jump_to_state_delayed (ssm, ELANSPI_FPCAPT_FP_CAPTURE, ELANSPI_HV_SENSOR_FRAME_DELAY, fpi_device_get_cancellable (FP_DEVICE (self)));
+    fpi_ssm_jump_to_state_delayed (ssm, ELANSPI_FPCAPT_FP_CAPTURE, ELANSPI_HV_SENSOR_FRAME_DELAY);
   else
     fpi_ssm_jump_to_state (ssm, ELANSPI_FPCAPT_FP_CAPTURE);
 }
