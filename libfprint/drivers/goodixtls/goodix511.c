@@ -17,6 +17,14 @@
 // License along with this library; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+#include "fp-device.h"
+#include "fp-image-device.h"
+#include "fpi-assembling.h"
+#include "fpi-image-device.h"
+#include "fpi-ssm.h"
+#include "glibconfig.h"
+#include "gusb/gusb-device.h"
+#include <stdio.h>
 #define FP_COMPONENT "goodixtls511"
 
 #include <glib.h>
@@ -40,17 +48,16 @@ G_DEFINE_TYPE(FpiDeviceGoodixTls511, fpi_device_goodixtls511,
 // ---- ACTIVE SECTION START ----
 
 enum activate_states {
-  ACTIVATE_READ_AND_NOP,
-  ACTIVATE_ENABLE_CHIP,
-  ACTIVATE_NOP,
-  ACTIVATE_CHECK_FW_VER,
-  ACTIVATE_CHECK_PSK,
-  ACTIVATE_RESET,
-  BREAK,
-  ACTIVATE_SET_MCU_IDLE,
-  ACTIVATE_SET_MCU_CONFIG,
-  ACTIVATE_SET_POWERDOWN_SCAN_FREQUENCY,
-  ACTIVATE_NUM_STATES,
+    ACTIVATE_READ_AND_NOP,
+    ACTIVATE_ENABLE_CHIP,
+    ACTIVATE_NOP,
+    ACTIVATE_CHECK_FW_VER,
+    ACTIVATE_CHECK_PSK,
+    ACTIVATE_RESET,
+    ACTIVATE_SET_MCU_IDLE,
+    ACTIVATE_SET_MCU_CONFIG,
+    ACTIVATE_SET_POWERDOWN_SCAN_FREQUENCY,
+    ACTIVATE_NUM_STATES,
 };
 
 static void check_none(FpDevice *dev, gpointer user_data, GError *error) {
@@ -150,17 +157,61 @@ static void check_preset_psk_read(FpDevice *dev, gboolean success,
 
   fpi_ssm_next_state(user_data);
 }
+static void check_idle(FpDevice* dev, gpointer user_data, GError* err)
+{
+    G_DEBUG_HERE();
 
+    if (err) {
+        fpi_ssm_mark_failed(user_data, err);
+        return;
+    }
+    fpi_ssm_next_state(user_data);
+}
+static void check_config_upload(FpDevice* dev, gboolean success,
+                                gpointer user_data, GError* error)
+{
+    G_DEBUG_HERE();
+    if (error) {
+        fpi_ssm_mark_failed(user_data, error);
+    }
+    else if (!success) {
+        GError* err = malloc(sizeof(GError));
+        err->message = "Failed to upload config";
+        fpi_ssm_mark_failed(user_data, err);
+    }
+    else {
+        fpi_ssm_next_state(user_data);
+    }
+}
+static void check_powerdown_scan_freq(FpDevice* dev, gboolean success,
+                                      gpointer user_data, GError* error)
+{
+    if (error) {
+        fpi_ssm_mark_failed(user_data, error);
+    }
+    else if (!success) {
+        GError* err = malloc(sizeof(GError));
+        err->message = "Failed set powerdown";
+        fpi_ssm_mark_failed(user_data, err);
+    }
+    else {
+        fpi_ssm_next_state(user_data);
+    }
+}
 static void activate_run_state(FpiSsm *ssm, FpDevice *dev) {
   GError *error = NULL;
 
   switch (fpi_ssm_get_cur_state(ssm)) {
     case ACTIVATE_READ_AND_NOP:
-      // Nop seems to clear the previous command buffer. But we are unable to
-      // do so.
-      goodix_receive_data(dev);
-      goodix_send_nop(dev, check_none, ssm);
-      break;
+        /* Uncomment below in case the successfully established bit didn't get
+           run and you get a timeout when trying to rerun */
+        // goodix_send_tls_successfully_established(dev, NULL, NULL);
+        // exit(0);
+        //           Nop seems to clear the previous command buffer. But we are
+        //           unable to do so.
+        goodix_receive_data(dev);
+        goodix_send_nop(dev, check_none, ssm);
+        break;
 
     case ACTIVATE_ENABLE_CHIP:
       goodix_send_enable_chip(dev, TRUE, check_none, ssm);
@@ -183,38 +234,135 @@ static void activate_run_state(FpiSsm *ssm, FpDevice *dev) {
       goodix_send_reset(dev, TRUE, 20, check_reset, ssm);
       break;
 
-    case BREAK:
-      g_set_error_literal(&error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Break");
-      fpi_ssm_mark_failed(ssm, error);
-      break;
+    case ACTIVATE_SET_MCU_IDLE:
+        goodix_send_mcu_switch_to_idle_mode(dev, 20, check_idle, ssm);
+        break;
 
-      // case ACTIVATE_SET_MCU_IDLE:
-      //   goodix_send_mcu_switch_to_idle_mode(ssm, 20);
-      //   break;
+    case ACTIVATE_SET_MCU_CONFIG:
+        goodix_send_upload_config_mcu(dev, goodix_511_config,
+                                      sizeof(goodix_511_config), NULL,
+                                      check_config_upload, ssm);
+        break;
 
-      // case ACTIVATE_SET_MCU_CONFIG:
-      //   goodix_send_upload_config_mcu(
-      //       ssm, goodix_511_config, sizeof(goodix_511_config), NULL, NULL,
-      //       NULL);
-      //   break;
-
-      // case ACTIVATE_SET_POWERDOWN_SCAN_FREQUENCY:
-      //   goodix_send_set_powerdown_scan_frequency(ssm, 100, NULL, NULL);
-      //   break;
-  }
+    case ACTIVATE_SET_POWERDOWN_SCAN_FREQUENCY:
+        goodix_send_set_powerdown_scan_frequency(
+            dev, 100, check_powerdown_scan_freq, ssm);
+        break;
+    }
 }
 
-static void activate_complete(FpiSsm *ssm, FpDevice *dev, GError *error) {
-  FpImageDevice *image_dev = FP_IMAGE_DEVICE(dev);
+static void tls_activation_complete(FpDevice* dev, gpointer user_data,
+                                    GError* error)
+{
+    if (error) {
+        fp_err("failed to complete tls activation: %s", error->message);
+        return;
+    }
+    FpImageDevice* image_dev = FP_IMAGE_DEVICE(dev);
 
-  fpi_image_device_activate_complete(image_dev, error);
+    fpi_image_device_activate_complete(image_dev, error);
+}
 
-  if (!error) goodix_tls(dev);
+static void activate_complete(FpiSsm* ssm, FpDevice* dev, GError* error)
+{
+    G_DEBUG_HERE();
+    if (!error)
+        goodix_tls(dev, tls_activation_complete, NULL);
 }
 
 // ---- ACTIVE SECTION END ----
 
 // -----------------------------------------------------------------------------
+
+// ---- SCAN SECTION START ----
+
+enum SCAN_STAGES {
+    SCAN_STAGE_SWITCH_TO_FDT_MODE,
+    SCAN_STAGE_SWITCH_TO_FDT_DOWN,
+    SCAN_STAGE_GET_IMG,
+
+    SCAN_STAGE_NUM,
+};
+
+static void check_none_cmd(FpDevice* dev, guint8* data, guint16 len,
+                           gpointer ssm, GError* err)
+{
+    if (err) {
+        fpi_ssm_mark_failed(ssm, err);
+        return;
+    }
+    fpi_ssm_next_state(ssm);
+}
+
+static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
+                             gpointer ssm, GError* err)
+{
+    if (err) {
+        fpi_ssm_mark_failed(ssm, err);
+        return;
+    }
+    fp_dbg("Got image");
+    FILE* out = fopen("./fingerprint.pgm", "wb");
+    fwrite(data, sizeof(guint8), len, out);
+    fclose(out);
+    fpi_ssm_next_state(ssm);
+}
+
+static void scan_get_img(FpDevice* dev, FpiSsm* ssm)
+{
+    goodix_tls_read_image(dev, scan_on_read_img, ssm);
+}
+const guint8 fdt_switch_state_mode[] = {0x0d, 0x01, 0x80, 0xaf, 0x80, 0xa4,
+                                        0x80, 0xb8, 0x80, 0xa8, 0x80, 0xb7};
+
+const guint8 fdt_switch_state_down[] = {0x0c, 0x01, 0x80, 0xaf, 0x80, 0xa4,
+                                        0x80, 0xb8, 0x80, 0xa8, 0x80, 0xb7};
+
+/*
+
+const guint8 fdt_switch_state_mode[] = {0x0d, 0x01, 0x80, 0xaf, 0x80, 0xa3,
+                                        0x80, 0xb7, 0x80, 0xa7, 0x80, 0xb6};
+
+const guint8 fdt_switch_state_down[] = {0x0d, 0x01, 0x80, 0xaf, 0x80,
+                                        0xbf, 0x80, 0xa4, 0x80, 0xb8,
+                                        0x80, 0xa8, 0x80, 0xb7};
+                                        */
+
+static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
+{
+    switch (fpi_ssm_get_cur_state(ssm)) {
+    case SCAN_STAGE_SWITCH_TO_FDT_MODE:
+        goodix_send_mcu_switch_to_fdt_mode(dev, fdt_switch_state_mode,
+                                           sizeof(fdt_switch_state_mode), NULL,
+                                           check_none_cmd, ssm);
+        break;
+    case SCAN_STAGE_SWITCH_TO_FDT_DOWN:
+        goodix_send_mcu_switch_to_fdt_down(dev, fdt_switch_state_down,
+                                           sizeof(fdt_switch_state_down), NULL,
+                                           check_none_cmd, ssm);
+        break;
+    case SCAN_STAGE_GET_IMG:
+        scan_get_img(dev, ssm);
+        break;
+    }
+}
+
+static void scan_complete(FpiSsm* ssm, FpDevice* dev, GError* error)
+{
+    if (error) {
+        fp_err("failed to scan: %s (code: %d)", error->message, error->code);
+        return;
+    }
+    fp_dbg("finished scan");
+}
+
+static void scan_start(FpiDeviceGoodixTls511* dev)
+{
+    fpi_ssm_start(fpi_ssm_new(FP_DEVICE(dev), scan_run_state, SCAN_STAGE_NUM),
+                  scan_complete);
+}
+
+// ---- SCAN SECTION END ----
 
 // ---- DEV SECTION START ----
 
@@ -249,8 +397,17 @@ static void dev_activate(FpImageDevice *img_dev) {
                 activate_complete);
 }
 
-static void dev_change_state(FpImageDevice *img_dev,
-                             FpiImageDeviceState state) {}
+
+
+static void dev_change_state(FpImageDevice* img_dev, FpiImageDeviceState state)
+{
+    FpiDeviceGoodixTls511* self = FPI_DEVICE_GOODIXTLS511(img_dev);
+    G_DEBUG_HERE();
+
+    if (state == FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON) {
+        scan_start(self);
+    }
+}
 
 static void dev_deactivate(FpImageDevice *img_dev) {
   fpi_image_device_deactivate_complete(img_dev, NULL);
