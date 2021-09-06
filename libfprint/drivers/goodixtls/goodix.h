@@ -213,6 +213,9 @@ void goodix_send_preset_psk_read(FpDevice *dev, guint32 flags, guint16 length,
                                  GoodixPresetPskReadCallback callback,
                                  gpointer user_data);
 
+void goodix_send_read_otp(FpDevice* dev, GoodixDefaultCallback callback,
+                          gpointer user_data);
+
 // ---- GOODIX SEND SECTION END ----
 
 // -----------------------------------------------------------------------------
@@ -240,5 +243,7 @@ void goodix_tls(FpDevice* dev, GoodixNoneCallback callback, gpointer user_data);
 
 void goodix_tls_read_image(FpDevice* dev, GoodixImageCallback callback,
                            gpointer user_data);
+
+void goodix_tls_decrypt_image(FpDevice* dev, guint8** data, guint16* len);
 
 // ---- TLS SECTION END ----

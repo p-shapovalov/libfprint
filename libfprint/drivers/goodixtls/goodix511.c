@@ -19,8 +19,11 @@
 
 #include "fp-device.h"
 #include "fp-image-device.h"
+#include "fp-image.h"
 #include "fpi-assembling.h"
+#include "fpi-context.h"
 #include "fpi-image-device.h"
+#include "fpi-image.h"
 #include "fpi-ssm.h"
 #include "glibconfig.h"
 #include "gusb/gusb-device.h"
@@ -35,8 +38,22 @@
 #include "goodix_proto.h"
 #include "goodix511.h"
 
+#include <math.h>
+
+#define GOODIX511_WIDTH 88
+#define GOODIX511_HEIGHT 80
+#define GOODIX511_FRAME_SIZE 80 * 88
+// For every 4 pixels there are 6 bytes and there are 8 extra start bytes and 5
+// extra end
+#define GOODIX511_RAW_FRAME_SIZE 8 + GOODIX511_FRAME_SIZE / 4 * 6 + 5
+#define GOODIX511_CAP_FRAMES 3 // Number of frames we capture per swipe
+
 struct _FpiDeviceGoodixTls511 {
   FpiDeviceGoodixTls parent;
+
+  guint8* otp;
+
+  GSList* frames;
 };
 
 G_DECLARE_FINAL_TYPE(FpiDeviceGoodixTls511, fpi_device_goodixtls511, FPI,
@@ -55,6 +72,7 @@ enum activate_states {
     ACTIVATE_CHECK_PSK,
     ACTIVATE_RESET,
     ACTIVATE_SET_MCU_IDLE,
+    ACTIVATE_SET_ODP,
     ACTIVATE_SET_MCU_CONFIG,
     ACTIVATE_SET_POWERDOWN_SCAN_FREQUENCY,
     ACTIVATE_NUM_STATES,
@@ -159,7 +177,6 @@ static void check_preset_psk_read(FpDevice *dev, gboolean success,
 }
 static void check_idle(FpDevice* dev, gpointer user_data, GError* err)
 {
-    G_DEBUG_HERE();
 
     if (err) {
         fpi_ssm_mark_failed(user_data, err);
@@ -170,14 +187,13 @@ static void check_idle(FpDevice* dev, gpointer user_data, GError* err)
 static void check_config_upload(FpDevice* dev, gboolean success,
                                 gpointer user_data, GError* error)
 {
-    G_DEBUG_HERE();
     if (error) {
         fpi_ssm_mark_failed(user_data, error);
     }
     else if (!success) {
-        GError* err = malloc(sizeof(GError));
-        err->message = "Failed to upload config";
-        fpi_ssm_mark_failed(user_data, err);
+        fpi_ssm_mark_failed(user_data,
+                            g_error_new(FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                                        "failed to upload mcu config"));
     }
     else {
         fpi_ssm_next_state(user_data);
@@ -190,25 +206,81 @@ static void check_powerdown_scan_freq(FpDevice* dev, gboolean success,
         fpi_ssm_mark_failed(user_data, error);
     }
     else if (!success) {
-        GError* err = malloc(sizeof(GError));
-        err->message = "Failed set powerdown";
-        fpi_ssm_mark_failed(user_data, err);
+        fpi_ssm_mark_failed(user_data,
+                            g_error_new(FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                                        "failed to set powerdown freq"));
     }
     else {
         fpi_ssm_next_state(user_data);
     }
 }
-static void activate_run_state(FpiSsm *ssm, FpDevice *dev) {
-  GError *error = NULL;
 
-  switch (fpi_ssm_get_cur_state(ssm)) {
+enum otp_write_states {
+    OTP_WRITE_1,
+    OTP_WRITE_2,
+    OTP_WRITE_3,
+    OTP_WRITE_4,
+
+    OTP_WRITE_NUM,
+};
+
+static guint16 otp_write_addrs[] = {0x0220, 0x0236, 0x0238, 0x023a};
+
+static void otp_write_run(FpiSsm* ssm, FpDevice* dev)
+{
+    guint16 data;
+    FpiDeviceGoodixTls511* self = FPI_DEVICE_GOODIXTLS511(dev);
+    guint8* otp = self->otp;
+    switch (fpi_ssm_get_cur_state(ssm)) {
+    case OTP_WRITE_1:
+        data = otp[46] << 4 | 8;
+        break;
+    case OTP_WRITE_2:
+        data = otp[47];
+        break;
+    case OTP_WRITE_3:
+        data = otp[48];
+        break;
+    case OTP_WRITE_4:
+        data = otp[49];
+        break;
+    }
+
+    goodix_send_write_sensor_register(
+        dev, otp_write_addrs[fpi_ssm_get_cur_state(ssm)], data, check_none,
+        ssm);
+    if (fpi_ssm_get_cur_state(ssm) == OTP_WRITE_NUM - 1) {
+        free(self->otp);
+    }
+}
+
+static void read_otp_callback(FpDevice* dev, guint8* data, guint16 len,
+                              gpointer ssm, GError* err)
+{
+    if (err) {
+        fpi_ssm_mark_failed(ssm, err);
+        return;
+    }
+    if (len < 64) {
+        fpi_ssm_mark_failed(ssm, g_error_new(FP_DEVICE_ERROR,
+                                             FP_DEVICE_ERROR_DATA_INVALID,
+                                             "OTP is invalid (len: %d)", 64));
+        return;
+    }
+    FpiDeviceGoodixTls511* self = FPI_DEVICE_GOODIXTLS511(dev);
+    self->otp = malloc(len);
+    memcpy(self->otp, data, len);
+    FpiSsm* otp_ssm = fpi_ssm_new(dev, otp_write_run, OTP_WRITE_NUM);
+    fpi_ssm_start_subsm(ssm, otp_ssm);
+}
+
+static void activate_run_state(FpiSsm* ssm, FpDevice* dev)
+{
+
+    switch (fpi_ssm_get_cur_state(ssm)) {
     case ACTIVATE_READ_AND_NOP:
-        /* Uncomment below in case the successfully established bit didn't get
-           run and you get a timeout when trying to rerun */
-        // goodix_send_tls_successfully_established(dev, NULL, NULL);
-        // exit(0);
-        //           Nop seems to clear the previous command buffer. But we are
-        //           unable to do so.
+        // Nop seems to clear the previous command buffer. But we are
+        // unable to do so.
         goodix_receive_data(dev);
         goodix_send_nop(dev, check_none, ssm);
         break;
@@ -238,6 +310,9 @@ static void activate_run_state(FpiSsm *ssm, FpDevice *dev) {
         goodix_send_mcu_switch_to_idle_mode(dev, 20, check_idle, ssm);
         break;
 
+    case ACTIVATE_SET_ODP:
+        goodix_send_read_otp(dev, read_otp_callback, ssm);
+        break;
     case ACTIVATE_SET_MCU_CONFIG:
         goodix_send_upload_config_mcu(dev, goodix_511_config,
                                       sizeof(goodix_511_config), NULL,
@@ -268,6 +343,11 @@ static void activate_complete(FpiSsm* ssm, FpDevice* dev, GError* error)
     G_DEBUG_HERE();
     if (!error)
         goodix_tls(dev, tls_activation_complete, NULL);
+    else {
+        fp_err("failed during activation: %s (code: %d)", error->message,
+               error->code);
+        fpi_image_device_activate_complete(FP_IMAGE_DEVICE(dev), error);
+    }
 }
 
 // ---- ACTIVE SECTION END ----
@@ -294,6 +374,32 @@ static void check_none_cmd(FpDevice* dev, guint8* data, guint16 len,
     fpi_ssm_next_state(ssm);
 }
 
+static unsigned char get_pix(struct fpi_frame_asmbl_ctx* ctx,
+                             struct fpi_frame* frame, unsigned int x,
+                             unsigned int y)
+{
+    return frame->data[x + y * ctx->frame_width];
+}
+
+// Bitdepth is 12, but we have to fit it in a byte
+static unsigned char squash(int v) { return v / 16; }
+
+static void decode_frame(guint8* raw_frame, GSList** frames)
+{
+    const int frame_size = GOODIX511_FRAME_SIZE * 2;
+    struct fpi_frame* frame = g_malloc(frame_size + sizeof(struct fpi_frame));
+
+    guint8* pix = frame->data;
+    for (int i = 8; i != GOODIX511_RAW_FRAME_SIZE - 5; i += 6) {
+        guint8* chunk = raw_frame + i;
+        *pix++ = squash(((chunk[0] & 0xf) << 8) + chunk[1]);
+        *pix++ = squash((chunk[3] << 4) + (chunk[0] >> 4));
+        *pix++ = squash(((chunk[5] & 0xf) << 8) + chunk[2]);
+        *pix++ = squash((chunk[4] << 4) + (chunk[5] >> 4));
+    }
+    *frames = g_slist_append(*frames, frame);
+}
+
 static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
                              gpointer ssm, GError* err)
 {
@@ -301,47 +407,73 @@ static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
         fpi_ssm_mark_failed(ssm, err);
         return;
     }
-    fp_dbg("Got image");
-    FILE* out = fopen("./fingerprint.pgm", "wb");
-    fwrite(data, sizeof(guint8), len, out);
-    fclose(out);
-    fpi_ssm_next_state(ssm);
+
+    FpiDeviceGoodixTls511* self = FPI_DEVICE_GOODIXTLS511(dev);
+    if (g_slist_length(self->frames) <= GOODIX511_CAP_FRAMES) {
+        self->frames = g_slist_append(self->frames, data);
+        fpi_ssm_jump_to_state(ssm, SCAN_STAGE_SWITCH_TO_FDT_MODE);
+    }
+    else {
+        self->frames = g_slist_append(self->frames, data);
+        GSList* raw_frames = g_slist_nth(self->frames, 1);
+
+        FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
+        struct fpi_frame_asmbl_ctx assembly_ctx;
+        assembly_ctx.frame_width = GOODIX511_WIDTH;
+        assembly_ctx.frame_height = GOODIX511_HEIGHT;
+        assembly_ctx.image_width = GOODIX511_WIDTH;
+        assembly_ctx.get_pixel = get_pix;
+
+        GSList* frames = NULL;
+
+        g_slist_foreach(raw_frames, (GFunc) decode_frame, &frames);
+
+        fpi_do_movement_estimation(&assembly_ctx, frames);
+        FpImage* img = fpi_assemble_frames(&assembly_ctx, frames);
+        img->flags |= FPI_IMAGE_PARTIAL;
+
+        g_slist_free_full(frames, g_free);
+
+        fpi_image_device_image_captured(img_dev, img);
+        fpi_image_device_report_finger_status(img_dev, FALSE);
+
+        fpi_ssm_next_state(ssm);
+    }
 }
 
 static void scan_get_img(FpDevice* dev, FpiSsm* ssm)
 {
     goodix_tls_read_image(dev, scan_on_read_img, ssm);
 }
-const guint8 fdt_switch_state_mode[] = {0x0d, 0x01, 0x80, 0xaf, 0x80, 0xa4,
-                                        0x80, 0xb8, 0x80, 0xa8, 0x80, 0xb7};
 
-const guint8 fdt_switch_state_down[] = {0x0c, 0x01, 0x80, 0xaf, 0x80, 0xa4,
-                                        0x80, 0xb8, 0x80, 0xa8, 0x80, 0xb7};
+const guint8 fdt_switch_state_mode[] = {
+    0x0d, 0x01, 0x80, 0xaf, 0x80, 0xbf, 0x80,
+    0xa4, 0x80, 0xb8, 0x80, 0xa8, 0x80, 0xb7,
+};
 
-/*
-
-const guint8 fdt_switch_state_mode[] = {0x0d, 0x01, 0x80, 0xaf, 0x80, 0xa3,
-                                        0x80, 0xb7, 0x80, 0xa7, 0x80, 0xb6};
-
-const guint8 fdt_switch_state_down[] = {0x0d, 0x01, 0x80, 0xaf, 0x80,
-                                        0xbf, 0x80, 0xa4, 0x80, 0xb8,
-                                        0x80, 0xa8, 0x80, 0xb7};
-                                        */
+const guint8 fdt_switch_state_down[] = {
+    0x0c, 0x01, 0x80, 0xaf, 0x80, 0xbf, 0x80,
+    0xa4, 0x80, 0xb8, 0x80, 0xa8, 0x80, 0xb7,
+};
 
 static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
 {
+    FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
+
     switch (fpi_ssm_get_cur_state(ssm)) {
     case SCAN_STAGE_SWITCH_TO_FDT_MODE:
-        goodix_send_mcu_switch_to_fdt_mode(dev, fdt_switch_state_mode,
+        goodix_send_mcu_switch_to_fdt_mode(dev, (guint8*) fdt_switch_state_mode,
                                            sizeof(fdt_switch_state_mode), NULL,
                                            check_none_cmd, ssm);
         break;
+
     case SCAN_STAGE_SWITCH_TO_FDT_DOWN:
-        goodix_send_mcu_switch_to_fdt_down(dev, fdt_switch_state_down,
+        goodix_send_mcu_switch_to_fdt_down(dev, (guint8*) fdt_switch_state_down,
                                            sizeof(fdt_switch_state_down), NULL,
                                            check_none_cmd, ssm);
         break;
     case SCAN_STAGE_GET_IMG:
+        fpi_image_device_report_finger_status(img_dev, TRUE);
         scan_get_img(dev, ssm);
         break;
     }
@@ -415,7 +547,10 @@ static void dev_deactivate(FpImageDevice *img_dev) {
 
 // ---- DEV SECTION END ----
 
-static void fpi_device_goodixtls511_init(FpiDeviceGoodixTls511 *self) {}
+static void fpi_device_goodixtls511_init(FpiDeviceGoodixTls511* self)
+{
+    self->frames = g_slist_alloc();
+}
 
 static void fpi_device_goodixtls511_class_init(
     FpiDeviceGoodixTls511Class *class) {
@@ -436,8 +571,8 @@ static void fpi_device_goodixtls511_class_init(
 
   // TODO
   img_dev_class->bz3_threshold = 24;
-  img_dev_class->img_width = 80;
-  img_dev_class->img_height = 88;
+  img_dev_class->img_width = GOODIX511_WIDTH;
+  img_dev_class->img_height = GOODIX511_HEIGHT;
 
   img_dev_class->img_open = dev_init;
   img_dev_class->img_close = dev_deinit;
