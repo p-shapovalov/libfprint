@@ -114,6 +114,7 @@ void goodix_receive_timeout_cb(FpDevice *dev, gpointer user_data);
 
 void goodix_receive_data(FpDevice *dev);
 
+void goodix_start_read_loop(FpDevice* dev);
 // ---- GOODIX RECEIVE SECTION END ----
 
 // -----------------------------------------------------------------------------
@@ -226,6 +227,8 @@ gboolean goodix_dev_init(FpDevice *dev, GError **error);
 
 gboolean goodix_dev_deinit(FpDevice *dev, GError **error);
 
+void goodix_reset_state(FpDevice* dev);
+
 // ---- DEV SECTION END ----
 
 // -----------------------------------------------------------------------------
@@ -240,6 +243,8 @@ void goodix_tls_run_state(FpiSsm* ssm, FpDevice* dev);
 void goodix_tls_complete(FpiSsm *ssm, FpDevice *dev, GError *error);
 
 void goodix_tls(FpDevice* dev, GoodixNoneCallback callback, gpointer user_data);
+
+gboolean goodix_shutdown_tls(FpDevice* dev, GError** error);
 
 void goodix_tls_read_image(FpDevice* dev, GoodixImageCallback callback,
                            gpointer user_data);
