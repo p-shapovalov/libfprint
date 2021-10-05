@@ -49,7 +49,7 @@
 // extra end
 #define GOODIX52XD_RAW_FRAME_SIZE                                               \
     (GOODIX52XD_HEIGHT * GOODIX52XD_SCAN_WIDTH) / 4 * 6
-#define GOODIX52XD_CAP_FRAMES 1 // Number of frames we capture per swipe
+#define GOODIX52XD_CAP_FRAMES 10 // Number of frames we capture per swipe
 
 typedef unsigned short Goodix52xdPix;
 
@@ -567,7 +567,7 @@ static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
         struct fpi_frame_asmbl_ctx assembly_ctx;
         assembly_ctx.frame_width = GOODIX52XD_WIDTH;
         assembly_ctx.frame_height = GOODIX52XD_HEIGHT;
-        assembly_ctx.image_width = GOODIX52XD_WIDTH;
+        assembly_ctx.image_width = GOODIX52XD_WIDTH*3;
         assembly_ctx.get_pixel = get_pix;
 
         GSList* frames = NULL;
@@ -577,7 +577,7 @@ static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
         frames = g_slist_reverse(frames);
 
         g_print("MOVEMENT EST\n");
-        //fpi_do_movement_estimation(&assembly_ctx, frames);
+        fpi_do_movement_estimation(&assembly_ctx, frames);
         g_print("MOVEMENT EST DOOONEE\n");
         FpImage* img = fpi_assemble_frames(&assembly_ctx, frames);
 
@@ -777,6 +777,7 @@ static void scan_complete(FpiSsm* ssm, FpDevice* dev, GError* error)
         fp_err("failed to scan: %s (code: %d)", error->message, error->code);
         return;
     }
+    g_print("finished scan!");
     fp_dbg("finished scan");
 }
 
