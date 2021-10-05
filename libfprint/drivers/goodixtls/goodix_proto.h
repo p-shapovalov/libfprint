@@ -26,6 +26,7 @@
 
 #define GOODIX_FLAGS_MSG_PROTOCOL (0xa0)
 #define GOODIX_FLAGS_TLS (0xb0)
+#define GOODIX_FLAGS_TLS_DATA (0xb2)
 
 #define GOODIX_CMD_NOP (0x00)
 #define GOODIX_CMD_MCU_GET_IMAGE (0x20)
@@ -44,7 +45,9 @@
 #define GOODIX_CMD_FIRMWARE_VERSION (0xa8)
 #define GOODIX_CMD_QUERY_MCU_STATE (0xae)
 #define GOODIX_CMD_ACK (0xb0)
+#define GOODIX_CMD_SET_DRV_STATE (0xc4)
 #define GOODIX_CMD_REQUEST_TLS_CONNECTION (0xd0)
+#define GOODIX_CMD_MCU_GET_POV_IMAGE (0xd2)
 #define GOODIX_CMD_TLS_SUCCESSFULLY_ESTABLISHED (0xd4)
 #define GOODIX_CMD_PRESET_PSK_WRITE (0xe0)
 #define GOODIX_CMD_PRESET_PSK_READ (0xe4)
@@ -53,6 +56,18 @@ typedef struct __attribute__((__packed__)) _GoodixPack {
   guint8 flags;
   guint16 length;
 } GoodixPack;
+
+typedef struct __attribute__((__packed__)) _WeirdMCUPack {
+  guint8 flag1;
+  guint8 flag2;
+  guint8 flag3;
+  guint8 flag4;
+  guint8 flag5;
+  guint8 flag6;
+  guint8 flag7;
+  guint8 flag8;
+  guint8 flag9;
+} WeirdMCUPack;
 
 typedef struct __attribute__((__packed__)) _GoodixProtocol {
   guint8 cmd;
@@ -69,6 +84,11 @@ typedef struct __attribute__((__packed__)) _GoodixAck {
 typedef struct __attribute__((__packed__)) _GoodixNop {
   guint32 unknown;
 } GoodixNop;
+
+typedef struct __attribute__((__packed__)) _GoodixSetDrvState {
+  guint8 unknown;
+  guint8 : 8;
+} GoodixSetDrvState;
 
 typedef struct __attribute__((__packed__)) _GoodixMcuSwitchToIdleMode {
   guint8 sleep_time;
@@ -109,9 +129,16 @@ typedef struct __attribute__((__packed__)) _GoodixQueryMcuState {
 } GoodixQueryMcuState;
 
 typedef struct __attribute__((__packed__)) _GoodixPresetPsk {
+  guint32 length;
+  guint32 offset;
+  guint32 flags;
+} GoodixPresetPsk;
+
+typedef struct __attribute__((__packed__)) _GoodixPresetPskResp {
   guint32 flags;
   guint32 length;
-} GoodixPresetPsk;
+  guint32 offset;
+} GoodixPresetPskResp;
 
 typedef struct __attribute__((__packed__)) _GoodixDefault {
   guint8 unused_flags;

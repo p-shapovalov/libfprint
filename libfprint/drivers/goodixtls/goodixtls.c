@@ -114,7 +114,7 @@ int goodix_tls_server_receive(GoodixTlsServer* self, guint8* data,
 
 static void tls_config_ssl(SSL* ssl)
 {
-    SSL_set_min_proto_version(ssl, TLS1_2_VERSION);
+    SSL_set_min_proto_version(ssl, SSL3_VERSION);
     SSL_set_max_proto_version(ssl, TLS1_2_VERSION);
     SSL_set_psk_server_callback(ssl, tls_server_psk_server_callback);
     SSL_set_cipher_list(ssl, "ALL");
