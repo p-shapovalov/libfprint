@@ -544,7 +544,7 @@ void goodix_send_nop(FpDevice *dev, GoodixNoneCallback callback,
     cb_info->user_data = user_data;
 
     goodix_send_protocol(dev, GOODIX_CMD_NOP, (guint8 *)&payload,
-                         sizeof(payload), NULL, FALSE, GOODIX_TIMEOUT, FALSE,
+                         sizeof(payload), NULL, FALSE, 0, FALSE,
                          goodix_receive_none, cb_info);
     goodix_receive_done(dev, NULL, 0, NULL);
     return;
@@ -761,7 +761,7 @@ void goodix_send_write_sensor_register(FpDevice *dev, guint16 address,
 
     goodix_send_protocol(dev, GOODIX_CMD_WRITE_SENSOR_REGISTER,
                          (guint8 *)&payload, sizeof(payload), NULL, TRUE,
-                         GOODIX_TIMEOUT, FALSE, goodix_receive_default, cb_info);
+                         GOODIX_TIMEOUT, FALSE, goodix_receive_none, cb_info);
     return;
   }
 
