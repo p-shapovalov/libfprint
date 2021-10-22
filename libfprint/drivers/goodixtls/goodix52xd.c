@@ -381,8 +381,8 @@ static void activate_complete(FpiSsm* ssm, FpDevice* dev, GError* error)
 // ---- SCAN SECTION START ----
 
 enum SCAN_STAGES {
-    SCAN_STAGE_SWITCH_TO_FDT_MODE,
     SCAN_STAGE_SWITCH_TO_FDT_DOWN,
+    SCAN_STAGE_SWITCH_TO_FDT_MODE,
     SCAN_STAGE_GET_IMG,
 
     SCAN_STAGE_NUM,
@@ -413,8 +413,6 @@ static unsigned char squash(int v) { return v / 16; }
 static void decode_frame(Goodix52xdPix frame[GOODIX52XD_FRAME_SIZE],
                          const guint8* raw_frame)
 {
-
-    save_image_to_pgm2(raw_frame, "finger3_before.pgm");
     Goodix52xdPix uncropped[GOODIX52XD_SCAN_WIDTH * GOODIX52XD_HEIGHT];
     Goodix52xdPix* pix = uncropped;
     for (int i = 0; i < GOODIX52XD_RAW_FRAME_SIZE; i += 6) {
@@ -424,7 +422,6 @@ static void decode_frame(Goodix52xdPix frame[GOODIX52XD_FRAME_SIZE],
         *pix++ = ((chunk[5] & 0xf) << 8) + chunk[2];
         *pix++ = (chunk[4] << 4) + (chunk[5] >> 4);
     }
-    save_image_to_pgm2(uncropped, "finger3.pgm");
 
     for (int y = 0; y != GOODIX52XD_HEIGHT; ++y) {
         for (int x = 0; x != GOODIX52XD_WIDTH; ++x) {
@@ -555,7 +552,6 @@ static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
 
 
     FpiDeviceGoodixTls52XD* self = FPI_DEVICE_GOODIXTLS52XD(dev);
-    save_image_to_pgm2(data, "finger2.pgm"); /// VERIFIED WORKING HERE 100% NOT HARDCODED LOL
     save_frame(self, data);
     if (g_slist_length(self->frames) <= GOODIX52XD_CAP_FRAMES) {
         fpi_ssm_jump_to_state(ssm, SCAN_STAGE_SWITCH_TO_FDT_MODE);
@@ -576,24 +572,18 @@ static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
         g_slist_foreach(raw_frames, (GFunc) process_frame, &pinfo);
         frames = g_slist_reverse(frames);
 
-        g_print("MOVEMENT EST\n");
         fpi_do_movement_estimation(&assembly_ctx, frames);
-        g_print("MOVEMENT EST DOOONEE\n");
         FpImage* img = fpi_assemble_frames(&assembly_ctx, frames);
 
         g_slist_free_full(frames, g_free);
         g_slist_free_full(self->frames, g_free);
         self->frames = g_slist_alloc();
 
-        g_print("Signal IMG Capture\n");
         fpi_image_device_image_captured(img_dev, img);
-        save_image_to_pgm(img, "finger.pgm");
 
 
-        g_print("Notify of finger removal\n");
         fpi_image_device_report_finger_status(img_dev, FALSE);
 
-        g_print("Next State\n");
         fpi_ssm_next_state(ssm);
     }
 }
@@ -745,7 +735,7 @@ static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
         break;
 
     case SCAN_STAGE_SWITCH_TO_FDT_DOWN:
-        g_print("SWITCH TO FDT DOWWWWNNNN\n");
+        g_print("SWITCH TO FDT DOWN\n");
         goodix_send_mcu_switch_to_fdt_down(dev, (guint8*) fdt_switch_state_down_52xd,
                                            sizeof(fdt_switch_state_down_52xd), NULL,
                                            check_none_cmd, ssm);
