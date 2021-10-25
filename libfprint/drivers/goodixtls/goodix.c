@@ -987,7 +987,8 @@ void goodix_send_preset_psk_read(FpDevice *dev, guint32 flags, guint16 length,
                                  GoodixPresetPskReadCallback callback,
                                  gpointer user_data) {
   GoodixPresetPsk payload = {.flags = GUINT32_TO_LE(flags),
-                             .length = GUINT32_TO_LE(length)};
+                             .length = GUINT32_TO_LE(length),
+                             .offset = GUINT16_TO_LE(0)};
   GoodixCallbackInfo *cb_info;
 
   if (callback) {
