@@ -141,18 +141,18 @@ void goodix_send_mcu_get_image(FpDevice *dev, guint8* payload, GoodixImageCallba
                                gpointer user_data);
 
 void goodix_send_mcu_switch_to_fdt_down(FpDevice *dev, guint8 *mode,
-                                        guint16 length,
+                                        guint16 length, gboolean reply,
                                         GDestroyNotify free_func,
                                         GoodixDefaultCallback callback,
                                         gpointer user_data);
 
 void goodix_send_mcu_switch_to_fdt_up(FpDevice *dev, guint8 *mode,
-                                      guint16 length, GDestroyNotify free_func,
+                                      guint16 length, gboolean reply, GDestroyNotify free_func,
                                       GoodixDefaultCallback callback,
                                       gpointer user_data);
 
 void goodix_send_mcu_switch_to_fdt_mode(FpDevice *dev, guint8 *mode,
-                                        guint16 length,
+                                        guint16 length, gboolean reply,
                                         GDestroyNotify free_func,
                                         GoodixDefaultCallback callback,
                                         gpointer user_data);
