@@ -101,7 +101,6 @@ static void check_firmware_version(FpDevice *dev, gchar *firmware,
   }
 
   fp_dbg("Device firmware: \"%s\"", firmware);
-  g_print("%s\n", firmware);
 
   if (strcmp(firmware, GOODIX_52XD_FIRMWARE_VERSION)) {
     g_set_error(&error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
@@ -273,7 +272,6 @@ static void activate_run_state(FpiSsm* ssm, FpDevice* dev)
 
     switch (fpi_ssm_get_cur_state(ssm)) {
     case ACTIVATE_READ_AND_NOP:
-        g_print("Read and NO OP\n");
         // Nop seems to clear the previous command buffer. But we are
         // unable to do so.
         goodix_start_read_loop(dev);
@@ -281,38 +279,31 @@ static void activate_run_state(FpiSsm* ssm, FpDevice* dev)
         break;
 
     case ACTIVATE_ENABLE_CHIP:
-        g_print("Enable Chip\n");
       goodix_send_enable_chip(dev, TRUE, check_none, ssm);
       break;
 
     case ACTIVATE_NOP:
-        g_print("NO OP\n");
       goodix_send_nop(dev, check_none, ssm);
       break;
 
     case ACTIVATE_CHECK_FW_VER:
-        g_print("Checking FW\n");
       goodix_send_firmware_version(dev, check_firmware_version, ssm);
       break;
 
     case ACTIVATE_CHECK_PSK:
-        g_print("Checking PSK\n");
       goodix_send_preset_psk_read(dev, GOODIX_52XD_PSK_FLAGS, 32,
                                   check_preset_psk_read, ssm);
       break;
 
     case ACTIVATE_RESET:
-        g_print("Reset Device\n");
       goodix_send_reset(dev, TRUE, 20, check_reset, ssm);
       break;
 
     case ACTIVATE_SET_MCU_IDLE:
-        g_print("Device IDLE\n");
         goodix_send_mcu_switch_to_idle_mode(dev, 20, check_idle, ssm);
         break;
 
     case ACTIVATE_SET_MCU_CONFIG:
-        g_print("Uploading Device Config\n");
         goodix_send_upload_config_mcu(dev, goodix_52xd_config,
                                       sizeof(goodix_52xd_config), NULL,
                                       check_config_upload, ssm);
@@ -362,11 +353,9 @@ static void check_none_cmd(FpDevice* dev, guint8* data, guint16 len,
                            gpointer ssm, GError* err)
 {
     if (err) {
-        g_print("CHECK NONE FAILED\n");
         fpi_ssm_mark_failed(ssm, err);
         return;
     }
-    g_print("CHECK NONE SUCCESS\n");
     fpi_ssm_next_state(ssm);
 }
 
@@ -514,7 +503,6 @@ static void save_frame(FpiDeviceGoodixTls52XD* self, guint8* raw)
 static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
                              gpointer ssm, GError* err)
 {
-    g_print("SCAN_ON_READ_IMG\n");
     if (err) {
         fpi_ssm_mark_failed(ssm, err);
         return;
@@ -654,7 +642,7 @@ static void scan_empty_run(FpiSsm* ssm, FpDevice* dev)
 
     case SCAN_EMPTY_GET_IMG:
         guint8 payload[] = {0x45, 0x03, 0xa7, 0x00, 0xa1, 0x00, 0xa7, 0x00, 0xa3, 0x00};
-        goodix_tls_read_image(dev, &payload, on_scan_empty_img, ssm);
+        goodix_tls_read_image(dev, &payload, sizeof(payload), on_scan_empty_img, ssm);
         break;
     }
 }
@@ -667,7 +655,7 @@ static void scan_empty_img(FpDevice* dev, FpiSsm* ssm)
 static void scan_get_img(FpDevice* dev, FpiSsm* ssm)
 {
     guint8 payload[] = {0x45, 0x03, 0xa7, 0x00, 0xa1, 0x00, 0xa7, 0x00, 0xa3, 0x00};
-    goodix_tls_read_image(dev, &payload, scan_on_read_img, ssm);
+    goodix_tls_read_image(dev, &payload, sizeof(payload), scan_on_read_img, ssm);
 }
 
 const guint8 fdt_switch_state_mode_52xd[] = {
@@ -700,20 +688,17 @@ static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
     switch (fpi_ssm_get_cur_state(ssm)) {
 
     case SCAN_STAGE_SWITCH_TO_FDT_MODE:
-        g_print("SWITCH TO FDT MODE\n");
         goodix_send_mcu_switch_to_fdt_mode(dev, (guint8*) fdt_switch_state_mode_52xd,
                                            sizeof(fdt_switch_state_mode_52xd), FALSE, NULL,
                                            check_none_cmd, ssm);
         break;
 
     case SCAN_STAGE_SWITCH_TO_FDT_DOWN:
-        g_print("SWITCH TO FDT DOWN\n");
         goodix_send_mcu_switch_to_fdt_down(dev, (guint8*) fdt_switch_state_down_52xd,
                                            sizeof(fdt_switch_state_down_52xd), FALSE, NULL,
                                            check_none_cmd, ssm);
         break;
     case SCAN_STAGE_GET_IMG:
-        g_print("SWITCH TO GET IMAGE\n");
         fpi_image_device_report_finger_status(img_dev, TRUE);
         guint16 payload = {0x05, 0x03};
         goodix_send_write_sensor_register(dev, 556, payload, write_sensor_complete, ssm);
@@ -736,7 +721,6 @@ static void scan_complete(FpiSsm* ssm, FpDevice* dev, GError* error)
         fp_err("failed to scan: %s (code: %d)", error->message, error->code);
         return;
     }
-    g_print("finished scan!");
     fp_dbg("finished scan");
 }
 
