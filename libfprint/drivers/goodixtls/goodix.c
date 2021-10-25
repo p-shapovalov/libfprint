@@ -350,7 +350,7 @@ void goodix_receive_pack(FpDevice *dev, guint8 *data, guint32 length) {
         // TODO
         break;
 
-    case GOODIX_FLAGS_TLS_DATA:°
+    case GOODIX_FLAGS_TLS_DATA:
         fp_dbg("Got TLS data msg");
         // GOODIX 52xd: Remove first 9 to get valid TLS content
         goodix_receive_done(dev, payload+9, payload_len-9, NULL);
@@ -551,10 +551,9 @@ void goodix_send_nop(FpDevice *dev, GoodixNoneCallback callback,
   goodix_receive_done(dev, NULL, 0, NULL);
 }
 
-void goodix_send_mcu_get_image(FpDevice* dev, GoodixImageCallback callback,
+void goodix_send_mcu_get_image(FpDevice* dev, guint8* payload, GoodixImageCallback callback,
                                gpointer user_data)
 {
-    GoodixDefault payload = {.unused_flags = 0x01};
     GoodixCallbackInfo* cb_info;
 
     if (callback) {
@@ -1315,7 +1314,7 @@ static void goodix_tls_ready_image_handler(FpDevice* dev, guint8* data,
     g_free(cb_info);
 }
 
-void goodix_tls_read_image(FpDevice* dev, GoodixImageCallback callback,
+void goodix_tls_read_image(FpDevice* dev, guint8* payload, GoodixImageCallback callback,
                            gpointer user_data)
 {
     g_assert(callback);
@@ -1324,7 +1323,7 @@ void goodix_tls_read_image(FpDevice* dev, GoodixImageCallback callback,
     cb_info->callback = G_CALLBACK(callback);
     cb_info->user_data = user_data;
 
-    goodix_send_mcu_get_image(dev, goodix_tls_ready_image_handler, cb_info);
+    goodix_send_mcu_get_image(dev, payload, goodix_tls_ready_image_handler, cb_info);
 }
 
 // ---- TLS SECTION END ----

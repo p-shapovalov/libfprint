@@ -592,7 +592,8 @@ static void scan_empty_run(FpiSsm* ssm, FpDevice* dev)
         break;
 
     case SCAN_EMPTY_GET_IMG:
-        goodix_tls_read_image(dev, on_scan_empty_img, ssm);
+        GoodixDefault payload = {.unused_flags = 0x01};
+        goodix_tls_read_image(dev, &payload, on_scan_empty_img, ssm);
         break;
     }
 }
@@ -604,7 +605,8 @@ static void scan_empty_img(FpDevice* dev, FpiSsm* ssm)
 
 static void scan_get_img(FpDevice* dev, FpiSsm* ssm)
 {
-    goodix_tls_read_image(dev, scan_on_read_img, ssm);
+    GoodixDefault payload = {.unused_flags = 0x01};
+    goodix_tls_read_image(dev, &payload, scan_on_read_img, ssm);
 }
 
 const guint8 fdt_switch_state_mode[] = {

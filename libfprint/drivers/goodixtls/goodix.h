@@ -137,7 +137,7 @@ void goodix_send_protocol(FpDevice *dev, guint8 cmd, guint8 *payload,
 void goodix_send_nop(FpDevice *dev, GoodixNoneCallback callback,
                      gpointer user_data);
 
-void goodix_send_mcu_get_image(FpDevice *dev, GoodixImageCallback callback,
+void goodix_send_mcu_get_image(FpDevice *dev, guint8* payload, GoodixImageCallback callback,
                                gpointer user_data);
 
 void goodix_send_mcu_switch_to_fdt_down(FpDevice *dev, guint8 *mode,
@@ -246,7 +246,7 @@ void goodix_tls(FpDevice* dev, GoodixNoneCallback callback, gpointer user_data);
 
 gboolean goodix_shutdown_tls(FpDevice* dev, GError** error);
 
-void goodix_tls_read_image(FpDevice* dev, GoodixImageCallback callback,
+void goodix_tls_read_image(FpDevice* dev, guint8* payload, GoodixImageCallback callback,
                            gpointer user_data);
 
 void goodix_tls_decrypt_image(FpDevice* dev, guint8** data, guint16* len);
