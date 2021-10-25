@@ -125,6 +125,7 @@ default_drivers = [
     'goodixmoc',
     'goodixtls511',
     'goodixtls52xd',
+    'goodixtls53xd',
     'nb1010',
 
     # SPI
@@ -160,6 +161,7 @@ driver_helper_mapping = {
     'elanspi' : [ 'udev' ],
     'goodixtls511' : [ 'goodixtls' ],
     'goodixtls52xd' : [ 'goodixtls' ],
+    'goodixtls53xd' : [ 'goodixtls' ],
     'virtual_image'          : [ 'virtual' ],
     'virtual_device'         : [ 'virtual' ],
     'virtual_device_storage' : [ 'virtual' ],
