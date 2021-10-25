@@ -715,11 +715,8 @@ static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
     case SCAN_STAGE_GET_IMG:
         g_print("SWITCH TO GET IMAGE\n");
         fpi_image_device_report_finger_status(img_dev, TRUE);
-        // Set Sensotr Register first to get valid output
-        // device.write_sensor_register(0x022c, b"\x05\x03")
-        guint8 payload[] = {0x05, 0x03};
-        goodix_send_write_sensor_register(dev, 0x022c, payload, write_sensor_complete, ssm);
-        //scan_get_img(dev, ssm);
+        guint16 payload = {0x05, 0x03};
+        goodix_send_write_sensor_register(dev, 556, payload, write_sensor_complete, ssm);
         break;
     }
 }
