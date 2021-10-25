@@ -115,6 +115,11 @@ typedef struct __attribute__((__packed__)) _GoodixPresetPsk {
   guint32 flags;
 } GoodixPresetPsk;
 
+typedef struct __attribute__((__packed__)) _GoodixPresetPskResponse {
+  guint32 flags;
+  guint32 length;
+} GoodixPresetPskResponse;
+
 typedef struct __attribute__((__packed__)) _GoodixDefault {
   guint8 unused_flags;
   guint8 : 8;
