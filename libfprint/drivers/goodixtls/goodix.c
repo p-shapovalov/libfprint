@@ -350,6 +350,12 @@ void goodix_receive_pack(FpDevice *dev, guint8 *data, guint32 length) {
         // TODO
         break;
 
+    case GOODIX_FLAGS_TLS_DATA:°
+        fp_dbg("Got TLS data msg");
+        // GOODIX 52xd: Remove first 9 to get valid TLS content
+        goodix_receive_done(dev, payload+9, payload_len-9, NULL);
+        break;
+
     default:
       fp_warn("Unknown flags: 0x%02x", flags);
       break;
