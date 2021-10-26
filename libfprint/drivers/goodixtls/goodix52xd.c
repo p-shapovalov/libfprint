@@ -79,6 +79,7 @@ enum activate_states {
     ACTIVATE_CHECK_FW_VER,
     ACTIVATE_CHECK_PSK,
     ACTIVATE_RESET,
+    ACTIVATE_OTP,
     ACTIVATE_SET_MCU_IDLE,
     ACTIVATE_SET_MCU_CONFIG,
     ACTIVATE_NUM_STATES,
@@ -253,18 +254,16 @@ static void read_otp_callback(FpDevice* dev, guint8* data, guint16 len,
         fpi_ssm_mark_failed(ssm, err);
         return;
     }
-    /*if (len < 64) {
+    if (len < 64) {
         fpi_ssm_mark_failed(ssm, g_error_new(FP_DEVICE_ERROR,
                                              FP_DEVICE_ERROR_DATA_INVALID,
                                              "OTP is invalid (len: %d)", 64));
         return;
     }
-        self->otp = malloc(64);
-    memcpy(self->otp, data, len);*/
     FpiDeviceGoodixTls52XD* self = FPI_DEVICE_GOODIXTLS52XD(dev);
-
-    FpiSsm* otp_ssm = fpi_ssm_new(dev, otp_write_run, 3);
-    fpi_ssm_start_subsm(ssm, otp_ssm);
+    self->otp = malloc(64);
+    memcpy(self->otp, data, len);
+    fpi_ssm_next_state(ssm);
 }
 
 static void activate_run_state(FpiSsm* ssm, FpDevice* dev)
@@ -297,6 +296,10 @@ static void activate_run_state(FpiSsm* ssm, FpDevice* dev)
 
     case ACTIVATE_RESET:
       goodix_send_reset(dev, TRUE, 20, check_reset, ssm);
+      break;
+
+    case ACTIVATE_OTP:
+      goodix_send_read_otp(dev, read_otp_callback, ssm);
       break;
 
     case ACTIVATE_SET_MCU_IDLE:
@@ -573,7 +576,7 @@ static void scan_empty_run(FpiSsm* ssm, FpDevice* dev)
         break;
 
     case SCAN_EMPTY_GET_IMG:
-        guint8 payload[] = {0x45, 0x03, 0xa7, 0x00, 0xa1, 0x00, 0xa7, 0x00, 0xa3, 0x00};
+        guint8 payload[] = {0x43, 0x03, 0xa7, 0x00, 0xa1, 0x00, 0xa7, 0x00, 0xa3, 0x00};
         goodix_tls_read_image(dev, &payload, sizeof(payload), on_scan_empty_img, ssm);
         break;
     }
@@ -586,7 +589,7 @@ static void scan_empty_img(FpDevice* dev, FpiSsm* ssm)
 
 static void scan_get_img(FpDevice* dev, FpiSsm* ssm)
 {
-    guint8 payload[] = {0x45, 0x03, 0xa7, 0x00, 0xa1, 0x00, 0xa7, 0x00, 0xa3, 0x00};
+    guint8 payload[] = {0x43, 0x03, 0xa7, 0x00, 0xa1, 0x00, 0xa7, 0x00, 0xa3, 0x00};
     goodix_tls_read_image(dev, &payload, sizeof(payload), scan_on_read_img, ssm);
 }
 
