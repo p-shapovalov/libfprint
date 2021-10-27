@@ -79,6 +79,7 @@ enum activate_states {
     ACTIVATE_CHECK_FW_VER,
     ACTIVATE_CHECK_PSK,
     ACTIVATE_RESET,
+    ACTIVATE_OTP,
     ACTIVATE_SET_MCU_IDLE,
     ACTIVATE_SET_MCU_CONFIG,
     ACTIVATE_NUM_STATES,
@@ -253,18 +254,16 @@ static void read_otp_callback(FpDevice* dev, guint8* data, guint16 len,
         fpi_ssm_mark_failed(ssm, err);
         return;
     }
-    /*if (len < 64) {
+    if (len < 64) {
         fpi_ssm_mark_failed(ssm, g_error_new(FP_DEVICE_ERROR,
                                              FP_DEVICE_ERROR_DATA_INVALID,
                                              "OTP is invalid (len: %d)", 64));
         return;
     }
-        self->otp = malloc(64);
-    memcpy(self->otp, data, len);*/
     FpiDeviceGoodixTls52XD* self = FPI_DEVICE_GOODIXTLS52XD(dev);
-
-    FpiSsm* otp_ssm = fpi_ssm_new(dev, otp_write_run, 3);
-    fpi_ssm_start_subsm(ssm, otp_ssm);
+    self->otp = malloc(64);
+    memcpy(self->otp, data, len);
+    fpi_ssm_next_state(ssm);
 }
 
 static void activate_run_state(FpiSsm* ssm, FpDevice* dev)
@@ -297,6 +296,10 @@ static void activate_run_state(FpiSsm* ssm, FpDevice* dev)
 
     case ACTIVATE_RESET:
       goodix_send_reset(dev, TRUE, 20, check_reset, ssm);
+      break;
+
+    case ACTIVATE_OTP:
+      goodix_send_read_otp(dev, read_otp_callback, ssm);
       break;
 
     case ACTIVATE_SET_MCU_IDLE:
@@ -546,74 +549,6 @@ static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
     }
 }
 
-gboolean
-save_image_to_pgm2 (guchar *data, const char *path)
-{
-  FILE *fd = fopen (path, "w");
-  size_t write_size = 7656;
-  int r;
-
-  if (!fd)
-    {
-      g_warning ("could not open '%s' for writing: %d", path, errno);
-      return FALSE;
-    }
-
-  r = fprintf (fd, "P2\n%d %d\n255\n",
-            GOODIX52XD_WIDTH, GOODIX52XD_HEIGHT);
-  if (r < 0)
-    {
-      fclose (fd);
-      g_critical ("pgm header write failed, error %d", r);
-      return FALSE;
-    }
-
-    for (int i = 0; i < write_size; i += 1) {
-        r = fprintf(fd, "%d\n", data[i]);
-    }
-  fclose (fd);
-  g_debug ("written to '%s'", path);
-
-  return TRUE;
-}
-
-gboolean
-save_image_to_pgm (FpImage *img, const char *path)
-{
-  FILE *fd = fopen (path, "w");
-  size_t write_size;
-  const guchar *data = fp_image_get_data (img, &write_size);
-  int r;
-
-  if (!fd)
-    {
-      g_warning ("could not open '%s' for writing: %d", path, errno);
-      return FALSE;
-    }
-
-  r = fprintf (fd, "P5 %d %d 255\n",
-               fp_image_get_width (img), fp_image_get_height (img));
-  if (r < 0)
-    {
-      fclose (fd);
-      g_critical ("pgm header write failed, error %d", r);
-      return FALSE;
-    }
-
-  r = fwrite (data, 1, write_size, fd);
-  if (r < write_size)
-    {
-      fclose (fd);
-      g_critical ("short write (%d)", r);
-      return FALSE;
-    }
-
-  fclose (fd);
-  g_debug ("written to '%s'", path);
-
-  return TRUE;
-}
-
 enum scan_empty_img_state {
     SCAN_EMPTY_NAV0,
     SCAN_EMPTY_GET_IMG,
@@ -641,7 +576,9 @@ static void scan_empty_run(FpiSsm* ssm, FpDevice* dev)
         break;
 
     case SCAN_EMPTY_GET_IMG:
-        guint8 payload[] = {0x45, 0x03, 0xa7, 0x00, 0xa1, 0x00, 0xa7, 0x00, 0xa3, 0x00};
+        FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
+        FpiDeviceGoodixTls52XD* self = FPI_DEVICE_GOODIXTLS52XD(img_dev);
+        guint8 payload[] = {0x43, 0x03, self->otp[26] + 6, 0x00, self->otp[26], 0x00, self->otp[45] + 6, 0x00, self->otp[45], 0x00};
         goodix_tls_read_image(dev, &payload, sizeof(payload), on_scan_empty_img, ssm);
         break;
     }
@@ -654,7 +591,9 @@ static void scan_empty_img(FpDevice* dev, FpiSsm* ssm)
 
 static void scan_get_img(FpDevice* dev, FpiSsm* ssm)
 {
-    guint8 payload[] = {0x45, 0x03, 0xa7, 0x00, 0xa1, 0x00, 0xa7, 0x00, 0xa3, 0x00};
+    FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
+    FpiDeviceGoodixTls52XD* self = FPI_DEVICE_GOODIXTLS52XD(img_dev);
+    guint8 payload[] = {0x43, 0x03, self->otp[26] + 6, 0x00, self->otp[26], 0x00, self->otp[45] + 6, 0x00, self->otp[45], 0x00};
     goodix_tls_read_image(dev, &payload, sizeof(payload), scan_on_read_img, ssm);
 }
 
@@ -665,18 +604,11 @@ const guint8 fdt_switch_state_mode_52xd[] = {
     0x92, 0x96, 0x96, 0x8c, 0x8c, 0x01
 };
 
-const guint8 fdt_switch_state_mode1_52xd[] = {
-    0x0d, 0x01, 0x27, 0x01, 0x21, 0x01, 0x27,
-    0x01, 0x23, 0x01, 0x00, 0x00, 0x00, 0x00, 
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x01
-};
-
-const guint8 fdt_switch_state_down_52xd[] = {
+guint8 fdt_switch_state_down_52xd[] = {
     0x9c, 0x01, 0x27, 0x01, 0x21, 0x01, 0x21,
     0x01, 0x23, 0x01, 0x8d, 0x8d, 0x86, 0x86,
     0x97, 0x97, 0x8f, 0x8f, 0x9b, 0x9b, 0x92,
-    0x92, 0x96, 0x96, 0x8c, 0x8c, 0x01, 0x00,
+    0x92, 0x96, 0x96, 0x8c, 0x8c, 0x00, 0x00,
     0x05, 0x03, 0xa7, 0x00, 0xa1, 0x00, 0xa7,
     0x00, 0xa3, 0x00, 0x00
 };
@@ -684,6 +616,7 @@ const guint8 fdt_switch_state_down_52xd[] = {
 static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
 {
     FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
+    FpiDeviceGoodixTls52XD* self = FPI_DEVICE_GOODIXTLS52XD(img_dev);
 
     switch (fpi_ssm_get_cur_state(ssm)) {
 
@@ -694,9 +627,25 @@ static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
         break;
 
     case SCAN_STAGE_SWITCH_TO_FDT_DOWN:
+        // FDT Down Cali
+        fdt_switch_state_down_52xd[2] = self->otp[33];
+        fdt_switch_state_down_52xd[4] = self->otp[41];
+        fdt_switch_state_down_52xd[6] = self->otp[42];
+        fdt_switch_state_down_52xd[8] = self->otp[43];
+
+        // Image Cali
+        fdt_switch_state_down_52xd[32] = self->otp[26];
+        fdt_switch_state_down_52xd[36] = self->otp[45];
+        fdt_switch_state_down_52xd[30] = fdt_switch_state_down_52xd[32] + 6;
+        fdt_switch_state_down_52xd[34] = fdt_switch_state_down_52xd[36] + 6;
+
+
+
+        fdt_switch_state_down_52xd[26] = 0x00;
+
         goodix_send_mcu_switch_to_fdt_down(dev, (guint8*) fdt_switch_state_down_52xd,
                                            sizeof(fdt_switch_state_down_52xd), FALSE, NULL,
-                                           check_none_cmd, ssm);
+                                           receive_fdt_down_ack, ssm);
         break;
     case SCAN_STAGE_GET_IMG:
         fpi_image_device_report_finger_status(img_dev, TRUE);
@@ -704,6 +653,20 @@ static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
         goodix_send_write_sensor_register(dev, 556, payload, write_sensor_complete, ssm);
         break;
     }
+}
+
+static void receive_fdt_down_ack(FpDevice* dev, guint8* data, guint16 len,
+                           gpointer ssm, GError* err)
+{
+    if (err) {
+        fpi_ssm_mark_failed(ssm, err);
+        return;
+    }
+
+    fdt_switch_state_down_52xd[26] = 0x01;
+    goodix_send_mcu_switch_to_fdt_down(dev, (guint8*) fdt_switch_state_down_52xd,
+                                        sizeof(fdt_switch_state_down_52xd), TRUE, NULL,
+                                        check_none_cmd, ssm);
 }
 
 static void write_sensor_complete(FpDevice *dev, gpointer user_data, GError *error) 

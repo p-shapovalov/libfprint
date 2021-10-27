@@ -66,11 +66,6 @@ static const FpIdEntry id_table[] = {
     {.vid = 0, .pid = 0, .driver_data = 0},
 };
 
-static void check_mcu_pov_image(FpDevice* dev, gboolean success,
-                                      gpointer user_data, GError* error);
-
-                                      static void write_sensor_complete(FpDevice *dev, gpointer user_data, GError *error) ;
-                                      gboolean
-save_image_to_pgm (FpImage *img, const char *path);
-gboolean
-save_image_to_pgm2 (guchar *data, const char *path);
+static void write_sensor_complete(FpDevice *dev, gpointer user_data, GError *error) ;
+static void receive_fdt_down_ack(FpDevice* dev, guint8* data, guint16 len,
+                           gpointer ssm, GError* err);
