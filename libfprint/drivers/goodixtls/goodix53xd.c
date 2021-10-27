@@ -79,6 +79,7 @@ enum activate_states {
     ACTIVATE_CHECK_FW_VER,
     ACTIVATE_CHECK_PSK,
     ACTIVATE_RESET,
+    ACTIVATE_OTP,
     ACTIVATE_SET_MCU_IDLE,
     ACTIVATE_SET_MCU_CONFIG,
     ACTIVATE_NUM_STATES,
@@ -253,18 +254,16 @@ static void read_otp_callback(FpDevice* dev, guint8* data, guint16 len,
         fpi_ssm_mark_failed(ssm, err);
         return;
     }
-    /*if (len < 64) {
+    if (len < 64) {
         fpi_ssm_mark_failed(ssm, g_error_new(FP_DEVICE_ERROR,
                                              FP_DEVICE_ERROR_DATA_INVALID,
                                              "OTP is invalid (len: %d)", 64));
         return;
     }
-        self->otp = malloc(64);
-    memcpy(self->otp, data, len);*/
     FpiDeviceGoodixTls53XD* self = FPI_DEVICE_GOODIXTLS53XD(dev);
-
-    FpiSsm* otp_ssm = fpi_ssm_new(dev, otp_write_run, 3);
-    fpi_ssm_start_subsm(ssm, otp_ssm);
+    self->otp = malloc(64);
+    memcpy(self->otp, data, len);
+    fpi_ssm_next_state(ssm);
 }
 
 static void activate_run_state(FpiSsm* ssm, FpDevice* dev)
@@ -297,6 +296,10 @@ static void activate_run_state(FpiSsm* ssm, FpDevice* dev)
 
     case ACTIVATE_RESET:
       goodix_send_reset(dev, TRUE, 20, check_reset, ssm);
+      break;
+
+    case ACTIVATE_OTP:
+      goodix_send_read_otp(dev, read_otp_callback, ssm);
       break;
 
     case ACTIVATE_SET_MCU_IDLE:
@@ -573,7 +576,9 @@ static void scan_empty_run(FpiSsm* ssm, FpDevice* dev)
         break;
 
     case SCAN_EMPTY_GET_IMG:
-        guint8 payload[] = {0x41, 0x03, 0xa5, 0x00, 0x9f, 0x00, 0xa5, 0x00, 0xa1, 0x00};
+        FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
+        FpiDeviceGoodixTls53XD* self = FPI_DEVICE_GOODIXTLS53XD(img_dev);
+        guint8 payload[] = {0x41, 0x03, self->otp[26], 0x00, self->otp[26] - 6, 0x00, self->otp[45], 0x00, self->otp[45] - 4, 0x00};
         goodix_tls_read_image(dev, &payload, sizeof(payload), on_scan_empty_img, ssm);
         break;
     }
@@ -586,7 +591,9 @@ static void scan_empty_img(FpDevice* dev, FpiSsm* ssm)
 
 static void scan_get_img(FpDevice* dev, FpiSsm* ssm)
 {
-    guint8 payload[] = {0x41, 0x03, 0xa5, 0x00, 0x9f, 0x00, 0xa5, 0x00, 0xa1, 0x00};
+    FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
+    FpiDeviceGoodixTls53XD* self = FPI_DEVICE_GOODIXTLS53XD(img_dev);
+    guint8 payload[] = {0x41, 0x03, self->otp[26], 0x00, self->otp[26] - 6, 0x00, self->otp[45], 0x00, self->otp[45] - 4, 0x00};
     goodix_tls_read_image(dev, &payload, sizeof(payload), scan_on_read_img, ssm);
 }
 
@@ -597,16 +604,17 @@ const guint8 fdt_switch_state_mode_53xd[] = {
     0x88, 0x88, 0x00
 };
 
-const guint8 fdt_switch_state_down_53xd[] = {
+guint8 fdt_switch_state_down_53xd[] = {
     0x8c, 0x01, 0x28, 0x01, 0x22, 0x01, 0x28, 0x01,
     0x24, 0x01, 0x91, 0x91, 0x8b, 0x8b, 0x96, 0x96,
     0x91, 0x91, 0x98, 0x98, 0x90, 0x90, 0x92, 0x92,
-    0x88, 0x88, 0x01
+    0x88, 0x88, 0x00
 };
 
 static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
 {
     FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
+    FpiDeviceGoodixTls53XD* self = FPI_DEVICE_GOODIXTLS53XD(img_dev);
 
     switch (fpi_ssm_get_cur_state(ssm)) {
 
@@ -617,9 +625,17 @@ static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
         break;
 
     case SCAN_STAGE_SWITCH_TO_FDT_DOWN:
+        // FDT Down Cali
+        fdt_switch_state_down_53xd[2] = self->otp[33];
+        fdt_switch_state_down_53xd[4] = self->otp[41];
+        fdt_switch_state_down_53xd[6] = self->otp[42];
+        fdt_switch_state_down_53xd[8] = self->otp[43];
+
+        // First FDT down must not send a reply
+        fdt_switch_state_down_53xd[26] = 0x00;
         goodix_send_mcu_switch_to_fdt_down(dev, (guint8*) fdt_switch_state_down_53xd,
                                            sizeof(fdt_switch_state_down_53xd), FALSE, NULL,
-                                           check_none_cmd, ssm);
+                                           receive_fdt_down_ack, ssm);
         break;
     case SCAN_STAGE_GET_IMG:
         fpi_image_device_report_finger_status(img_dev, TRUE);
@@ -627,6 +643,21 @@ static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
         goodix_send_write_sensor_register(dev, 556, payload, write_sensor_complete, ssm);
         break;
     }
+}
+
+static void receive_fdt_down_ack(FpDevice* dev, guint8* data, guint16 len,
+                           gpointer ssm, GError* err)
+{
+    if (err) {
+        fpi_ssm_mark_failed(ssm, err);
+        return;
+    }
+
+    // Second FDT down must send a response
+    fdt_switch_state_down_53xd[26] = 0x01;
+    goodix_send_mcu_switch_to_fdt_down(dev, (guint8*) fdt_switch_state_down_53xd,
+                                        sizeof(fdt_switch_state_down_53xd), TRUE, NULL,
+                                        check_none_cmd, ssm);
 }
 
 static void write_sensor_complete(FpDevice *dev, gpointer user_data, GError *error) 
