@@ -616,6 +616,7 @@ static void scan_run_state(FpiSsm* ssm, FpDevice* dev)
     FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
     FpiDeviceGoodixTls53XD* self = FPI_DEVICE_GOODIXTLS53XD(img_dev);
 
+
     switch (fpi_ssm_get_cur_state(ssm)) {
 
     case SCAN_STAGE_SWITCH_TO_FDT_MODE:
