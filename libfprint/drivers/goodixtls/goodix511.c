@@ -591,10 +591,11 @@ static void scan_empty_run(FpiSsm* ssm, FpDevice* dev)
         goodix_send_nav_0(dev, check_none_cmd, ssm);
         break;
 
-    case SCAN_EMPTY_GET_IMG:
+    case SCAN_EMPTY_GET_IMG: {
         GoodixDefault payload = {.unused_flags = 0x01};
         goodix_tls_read_image(dev, &payload, sizeof(payload), on_scan_empty_img, ssm);
         break;
+    }
     }
 }
 
