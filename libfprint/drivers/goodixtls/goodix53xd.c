@@ -229,7 +229,7 @@ enum otp_write_states {
 
 static void otp_write_run(FpiSsm* ssm, FpDevice* dev)
 {
-    FpiDeviceGoodixTls53XD* self = FPI_DEVICE_GOODIXTLS53XD(dev);
+    /*FpiDeviceGoodixTls53XD* self = FPI_DEVICE_GOODIXTLS53XD(dev);
     switch (fpi_ssm_get_cur_state(ssm)) {
     case OTP_WRITE_1:
         guint8 sensor1[] = {0x0a, 0x02};
@@ -244,7 +244,7 @@ static void otp_write_run(FpiSsm* ssm, FpDevice* dev)
             ssm);
         fpi_ssm_next_state(ssm);
         break;
-    }
+    }*/
 }
 
 static void read_otp_callback(FpDevice* dev, guint8* data, guint16 len,
@@ -575,12 +575,13 @@ static void scan_empty_run(FpiSsm* ssm, FpDevice* dev)
         goodix_send_nav_0(dev, check_none_cmd, ssm);
         break;
 
-    case SCAN_EMPTY_GET_IMG:
+    case SCAN_EMPTY_GET_IMG: {
         FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
         FpiDeviceGoodixTls53XD* self = FPI_DEVICE_GOODIXTLS53XD(img_dev);
         guint8 payload[] = {0x41, 0x03, self->otp[26], 0x00, self->otp[26] - 6, 0x00, self->otp[45], 0x00, self->otp[45] - 4, 0x00};
         goodix_tls_read_image(dev, &payload, sizeof(payload), on_scan_empty_img, ssm);
         break;
+    }
     }
 }
 
