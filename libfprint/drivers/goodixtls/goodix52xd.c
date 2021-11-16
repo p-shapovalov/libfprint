@@ -229,7 +229,7 @@ enum otp_write_states {
 
 static void otp_write_run(FpiSsm* ssm, FpDevice* dev)
 {
-    FpiDeviceGoodixTls52XD* self = FPI_DEVICE_GOODIXTLS52XD(dev);
+    /*FpiDeviceGoodixTls52XD* self = FPI_DEVICE_GOODIXTLS52XD(dev);
     switch (fpi_ssm_get_cur_state(ssm)) {
     case OTP_WRITE_1:
         guint8 sensor1[] = {0x0a, 0x02};
@@ -244,7 +244,7 @@ static void otp_write_run(FpiSsm* ssm, FpDevice* dev)
             ssm);
         fpi_ssm_next_state(ssm);
         break;
-    }
+    }*/
 }
 
 static void read_otp_callback(FpDevice* dev, guint8* data, guint16 len,
